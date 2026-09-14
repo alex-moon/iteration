@@ -8,6 +8,7 @@ import { validateCheck, validateLoopDecision } from './verdicts';
 import { agent } from './agent';
 import { addStrike, clearShutdown, loadLoopState, writeLoopState } from './loop-state';
 import { stateCommandsBlock } from './wiring';
+import { gatherSnapshot, setGatheredSnapshot, snapshotText } from './snapshot';
 import { repoInfo, runPass, setRepo, type PassOutcome } from './pass';
 import { warmTicketCache } from './orchestrator';
 
@@ -21,7 +22,8 @@ export async function decideLoop(): Promise<boolean> {
   const v = await agent<LoopDecisionVerdict>(
     'loop-decision',
     `You have just completed an iteration pass on the GitHub open
-issues of the repo. Recent activity is visible in logs/iteration-*.log, plan docs in docs/,
+issues of the repo. Recent activity is visible in .iteration/logs/iteration-*.log, plan docs
+in .iteration/docs/,
 open PRs and issue comments in GitHub. Decide whether the iteration loop should CONTINUE or END.
 
 END the loop when: all open issues are meaningfully done or blocked, and what remains needs
@@ -60,6 +62,14 @@ export async function checkShutdown(countStrike = true): Promise<0 | 2 | 1> {
 Note: the user has marked issue #${priority} as PRIORITY - also check
 whether it specifically now shows new information.`
       : '';
+  // The snapshot is per-pass and this check runs between passes: refresh it so
+  // the injected snapshot reflects "now" before looking for new information.
+  try {
+    const warmedIssues = await warmTicketCache(repoInfo());
+    setGatheredSnapshot(await gatherSnapshot(repoInfo(), warmedIssues));
+  } catch (err) {
+    log(`shutdown-check snapshot refresh failed: ${(err as Error).message}`);
+  }
   const v = await agent<CheckVerdict>(
     'loop-check',
     `A previous iteration of this loop has already decided that all GitHub
@@ -73,8 +83,9 @@ that decision:
 - new issue comments that ANSWER a previously blocking open question, add new
   requirements, or otherwise make meaningful work possible again;
 - new open issues or new open PRs.
-Current open issues (with comments), open PRs and plan docs come from the STATE
-COMMANDS block below; you do NOT need to re-run gh issue list / pr list.
+CONTEXT INJECTION (frozen snapshot, refreshed at the start of this check - you do NOT need
+to re-run gh issue list / pr list):
+${snapshotText()}
 
 ${stateCommandsBlock('loop-check', null, repoInfo())}
 Final line MUST be the single JSON object: ${CHECK_SCHEMA}`,

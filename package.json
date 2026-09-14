@@ -1,5 +1,5 @@
 {
-  "name": "iteration",
+  "name": "@alex-moon/iteration",
   "version": "0.1.0",
   "description": "Iteration-loop orchestrator over GitHub issues: npx iteration starts the orchestrator; agents call `iteration get-ticket <n>` for cached ticket state.",
   "license": "LICENSE",

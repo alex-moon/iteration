@@ -7,12 +7,16 @@ import { acceptAnyObject, validateLoopDecision, validateTriage } from './verdict
 import { agent } from './agent';
 import { addStrike } from './loop-state';
 import {
+  PLAN_DOCS_DIR,
   passSnapshot,
   gatherSnapshot,
   planDocFor,
   refreshPlanDoc,
   setGatheredSnapshot,
+  snapshotText,
+  ticketText,
 } from './snapshot';
+import { flushComments } from './comments';
 import { fetchIssueTitle, fetchPendingReviewComments } from './github';
 import { openPrForBranch } from './octokit';
 import { stateCommandsBlock } from './wiring';
@@ -58,11 +62,11 @@ async function commitAndPush(msg: string): Promise<void> {
 }
 
 async function commitPlan(issue: number): Promise<void> {
-  if (!(await hasPathChanges('docs'))) {
+  if (!(await hasPathChanges(PLAN_DOCS_DIR))) {
     log('No plan changes to commit');
     return;
   }
-  await addPathAndCommit('docs', `docs: plan updates for #${issue}`);
+  await addPathAndCommit(PLAN_DOCS_DIR, `.iteration: plan updates for #${issue}`);
   await pushBranch(currentBranch);
   log('Committed and pushed plan updates');
   refreshPlanDoc(issue);
@@ -73,14 +77,15 @@ async function commitPlan(issue: number): Promise<void> {
 async function contextPrefix(issue: number, phase: string): Promise<string> {
   const root = await repoRoot();
   return `You are working in the repo ${root} on branch ${currentBranch} for GitHub issue #${issue}
-in ${repo.fullName}. Ticket STATE arrives via the orchestrator client commands:
+in ${repo.fullName}.
+CONTEXT INJECTION (frozen snapshot from the orchestrator, gathered this pass; do not re-read
+GitHub - everything about THIS ticket is below):
+${ticketText(issue)}
 ${stateCommandsBlock(phase, issue, repo)}
-Read docs/overview.md and docs/workflow.md for
-background if present. Follow the repo's existing conventions. Do NOT commit or push - the
-orchestrator does that. Before doing anything, confirm from the repo's own state (not just
-issue comments) that this ticket is neither already done nor blocked on the user: if it is,
-post the blocking reason as a gh issue comment on #${issue} and stop immediately without
-doing any work.
+Follow the repo's existing conventions. Do NOT commit or push - the orchestrator does that.
+Before doing anything, confirm from the injected state that this ticket is neither already
+done nor blocked on the user: if it is, run
+'iteration queue-comment ${issue} "<blocking reason>"' and stop immediately without doing any work.
 `;
 }
 
@@ -99,21 +104,21 @@ priority issue is DONE or BLOCKED, classify it exactly as you would any other ti
 `
       : '';
   return `You are triaging the open GitHub issues for repo ${repo.fullName} and picking the
-next one to work on. Do NOT trust issue state alone: judge each ticket from the repo itself.
-The STATE COMMANDS block has the open issues with their full comment conversations, the open PRs
-and the plan docs per issue - you do NOT need
-to re-run gh issue list / gh pr list; only post issue comments or fetch detail that is
-genuinely missing.${priorityNote}
+next one to work on. Do NOT trust issue state alone: judge each ticket from the captured
+state below. CONTEXT INJECTION (frozen snapshot, gathered this pass - you do NOT need
+to re-run gh issue list / gh pr list, and you do NOT need get-ticket):
+${snapshotText()}
+${stateCommandsBlock('triage-tickets', null, repo)}
 1. Classify each issue as exactly one of:
    - DONE:   the deliverable exists and is verified (green PR/checks or work landed on main);
-             a branch whose name contains the ticket number carrying the deliverable with an
-             open PR against main means the ticket is in review or done.
+              a branch whose name contains the ticket number carrying the deliverable with an
+              open PR against main means the ticket is in review or done.
    - BLOCKED: progress requires something only the user can provide - an unanswered open
-             question, an access request, or a decision the repo gives no basis to make.
+              question, an access request, or a decision the repo gives no basis to make.
    - READY:  work is possible now that could move the ticket forward.
-   If an issue is BLOCKED and has no comment already stating that, post
-   'gh issue comment <n> --repo ${repo.fullName}' briefly stating why and what would unblock
-   it (once per ticket; if an identical comment already exists, do not re-post).
+   If an issue is BLOCKED and has no comment already stating that, queue it via
+   'iteration queue-comment <n> "<reason and what would unblock it>"' (once per ticket;
+   if an identical comment already exists in the injected thread, do not queue again).
 2. If every open issue is DONE or BLOCKED, your final line is {"kind":"none"}.
 3. Otherwise pick ONE issue: prefer tickets whose comments contain answers to previously
    raised open questions, then smaller well-scoped READY issues over sprawling ones.
@@ -124,9 +129,7 @@ genuinely missing.${priorityNote}
 export async function triagePhase(): Promise<TriageVerdict> {
   const v = await agent<TriageVerdict>(
     'triage-tickets',
-    `${triagePrompt()}
-
-${stateCommandsBlock('triage-tickets', null, repo)}`,
+    triagePrompt(),
     validateTriage,
     TRIAGE_SCHEMA,
   );
@@ -182,6 +185,7 @@ export async function runPass(): Promise<PassOutcome> {
   const pick = await triagePhase();
   if (pick.kind === 'none') {
     log('Triage verdict: none');
+    await flushComments(repo);
     if (!addStrike('strikes', 'triage returned ISSUE:NONE')) {
       log(
         `All work blocked for ${STRIKE_LIMIT} consecutive strikes; downing tools pending final grace check`,
@@ -205,7 +209,7 @@ export async function runPass(): Promise<PassOutcome> {
       'plan-write',
       `${await contextPrefix(ISSUE, "plan-write")}
 
-Write a plan at docs/plan-${ISSUE}-<summary>.md (summary matches the branch name suffix). It
+Write a plan at .iteration/docs/plan-${ISSUE}-<summary>.md (summary matches the branch name suffix). It
 must be:
 a) detailed: a motivation section linking the issue, decisions so far, and a checklist of
    small tasks each safely deliverable in a single commit;
@@ -235,8 +239,8 @@ a) more detailed: flesh out thin tasks into concrete steps; move anything alread
    in the issue comments OUT of 'Open questions' and into the detailed plan;
 b) more honest: criticise every assumption; move anything with ANY doubt into
    'Open questions', and make sure no planned task depends on an open question.
-Post a gh issue comment on #${ISSUE} for any NEW open question not already in the issue
-comments. Commit nothing.
+Queue a comment on #${ISSUE} via 'iteration queue-comment ${ISSUE} "<question>"' for any NEW
+open question not already in the injected issue comments. Commit nothing.
 Final line MUST be the single JSON object: {}`,
       acceptAnyObject,
       '{}',
@@ -255,10 +259,12 @@ Final line MUST be the single JSON object: {}`,
       `${await contextPrefix(ISSUE, "implement")}
 The plan is at ${planRef}.
 
-Read the issue comments via iteration get-ticket (they hold the answers to open
-questions) first - do only work that is no longer blocked by an open question. Deliver ONE stable, self-contained piece
-of work: either a real deliverable for the ticket, or an intermediary that a later iteration
-can build on. Verify it (relevant subset of npm run lint, npm test, npm run typecheck) before
+The injected context above already includes the issue's comments (they hold the answers to
+open questions) - do only work that is no longer blocked by an open question. Deliver ONE
+stable, self-contained
+piece of work: either a real deliverable for the ticket, or an intermediary that a later iteration
+can build on. Verify it (relevant subset of
+npm run lint, npm test, npm run typecheck) before
 leaving it in the working tree. Commit nothing.
 Final line MUST be the single JSON object: {}`,
       acceptAnyObject,
@@ -277,7 +283,8 @@ look for bugs, edge cases, missed requirements, and plan drift. Then:
 - write new tests where breaking potential exists;
 - make any fixes or hardening changes that are within your reach;
 - update the plan doc (${planRef}) with any new questions raised, under 'Open questions';
-- post a gh issue comment on #${ISSUE} for any open question not already in the issue comments.
+- queue a comment on #${ISSUE} via 'iteration queue-comment ${ISSUE} "<question>"' for any open
+  question not already in the injected issue comments.
 Commit nothing.
 Final line MUST be the single JSON object: {}`,
     acceptAnyObject,
@@ -297,8 +304,9 @@ Final line MUST be the single JSON object: {}`,
 An open PR (#${prNum}) targets main for this branch. Its PENDING review comments are read
 via GraphQL by the harness and injected below; the PR itself is open on GitHub for detail.
 pendingReviewComments=${JSON.stringify(pendingForPr)}
-Address every actionable comment: make the requested change, or reply/post on the issue
-why it is handled elsewhere (e.g. split into its own ticket).
+Address every actionable comment: make the requested change, or queue a reply on the issue
+via 'iteration queue-comment ${ISSUE} "<reason>"' when it is handled elsewhere (e.g. split
+into its own ticket).
 Verify with the relevant tests/npm run ci. Commit nothing.
 Final line MUST be the single JSON object: {}`,
       acceptAnyObject,
@@ -309,6 +317,9 @@ Final line MUST be the single JSON object: {}`,
 
   // ---- PR decision ----
   await prDecisionPhase(ISSUE);
+
+  // ---- Consolidated push-back: one comment per issue, once per pass ----
+  await flushComments(repo);
 
   log(`Pass complete for issue #${ISSUE} (${currentBranch})`);
   await checkoutBranch('main');
@@ -326,8 +337,8 @@ Decide whether this ticket is meaningfully done: a real deliverable exists, veri
 passes, and remaining gaps are honest follow-ups documented in the plan. If yes: run
 npm run ci; if it passes, open a PR targeting main (gh pr create --repo ${repo.fullName}
 --base main --head ${currentBranch}) with a short summary linking the plan file, and close
-out. If not meaningfully done, do nothing except post any missing open questions as a gh
-issue comment on #${issue}.
+out. If not meaningfully done, do nothing except queue any missing open questions via
+'iteration queue-comment ${issue} "<question>"'.
 Final line MUST be the single JSON object: ${LOOP_DECISION_SCHEMA}`,
     validateLoopDecision,
     LOOP_DECISION_SCHEMA,

@@ -5,13 +5,19 @@ Run `npx iteration` (after the package is published) or `npm link && iteration`
 in any GitHub repo; it starts a loopback HTTP orchestrator plus the pass loop,
 and agent phases call back via client commands with `ITERATION_PORT` set:
 
-- `iteration get-ticket <n>` — full ticket (title, body, state, comments)
+- `iteration get-ticket <n>` — full ticket (title, body, state, comments; fallback)
 - `iteration list-issues` — open issues for the pass (with comment threads)
 - `iteration submit-verdict <phase> <json>` — deliver a phase verdict mid-phase
+- `iteration queue-comment <n> '<body>'` — queue a comment; the orchestrator
+  posts one consolidated comment per issue to GitHub at the end of the pass
 
-Install: `npm install -g .` (or `npm link`) — publishes as `iteration` under
-the maintainer's scope when ready (naming to confirm; see open question on
-issue #2). `GH_TOKEN` (or an authenticated `gh`) is used for GitHub API reads.
+Context is injected into each phase prompt from a frozen per-pass snapshot
+(triage sees every ticket, dedicated phases only theirs), so agents should not
+need `gh`. Plans live in `.iteration/docs/`, logs in `.iteration/logs/`.
+
+Install: `npm install -g @alex-moon/iteration` (or `npm link`) — the public
+scope is `@alex-moon/iteration`; the binary remains `iteration`.
+`GH_TOKEN` (or an authenticated `gh`) is used for GitHub API reads.
 
 Agent binary: set `ITERATION_AGENT_CMD="<cmd> [args]"` to drive phases with an
 alternative/mock agent; defaults to `opencode`. `scripts/mock-parity.sh` runs a

@@ -3,6 +3,7 @@ import type { IssueInfo, PassSnapshot, Repo } from './types';
 import { fetchIssues, fetchTicket } from './github';
 import { log } from './log';
 import { recordSubmittedVerdict } from './submit-state';
+import { queueComment } from './comments';
 import { passSnapshot } from './snapshot';
 import { detectRepoFromOrigin } from './git-client';
 import { runIteration } from './loop';
@@ -93,6 +94,22 @@ export function serve(repo: Repo): Promise<http.Server> {
             respond(200, { ok: true });
           } catch {
             respond(400, { error: 'unparsable body; expected {"phase":"<title>","verdict":"<json-string>"}' });
+          }
+          return;
+        }
+
+        if (cmd === 'queue-comment') {
+          const raw = await readPostBody(req);
+          try {
+            const parsed = JSON.parse(raw) as { issue: number; by: string; body: string };
+            if (!Number.isInteger(parsed.issue) || typeof parsed.body !== 'string') {
+              respond(400, { error: 'expected body {"issue":<number>,"body":"<comment>"}' });
+              return;
+            }
+            queueComment(parsed.issue, parsed.body, typeof parsed.by === 'string' ? parsed.by : 'agent');
+            respond(200, { ok: true });
+          } catch {
+            respond(400, { error: 'unparsable body; expected {"issue":<number>,"body":"<comment>"}' });
           }
           return;
         }

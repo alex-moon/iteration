@@ -56,11 +56,31 @@ function submitVerdict(phase, verdict) {
 }
 
 (async () => {
+  const prompt = String(process.argv[2] || '');
   if (phase === 'triage-tickets' && n === 1) {
     out('I think issue 2 is a good starting point, going with that.');
   }
   if (phase === 'triage-tickets') {
-    out('{"kind":"issue","issue":2}');
+    // Pick the first injected issue in the frozen snapshot, like a real agent.
+    const pick = /- #(\d+) "/.exec(prompt);
+    if (pick) out(`{"kind":"issue","issue":${pick[1]}}`);
+  }
+  if (phase === 'plan-review') {
+    await (async () => {
+      const issue = /for GitHub issue #(\d+)/.exec(prompt);
+      if (issue) await submitVerdict('plan-review', '{}');
+    })();
+  }
+  if (phase === 'critic') {
+    const issue = /for GitHub issue #(\d+)/.exec(prompt);
+    const port = process.env.ITERATION_PORT;
+    if (issue && port) {
+      await new Promise((resolve) => {
+        const body = JSON.stringify({ issue: Number(issue[1]), by: 'critic', body: 'Mock open question: is this consolidation enough?' });
+        const req = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/queue-comment', headers: { 'Content-Length': Buffer.byteLength(body) } }, (res) => res.resume().on('end', resolve));
+        req.end(body);
+      });
+    }
   }
   if (phase === 'implement') {
     const posted = await submitVerdict('implement', '{"ok":true}');

@@ -30,7 +30,13 @@ export async function fetchIssues(repo: Repo): Promise<IssueInfo[]> {
       } catch (err) {
         log(`comments for #${i.number} fetch failed: ${(err as Error).message}`);
       }
-      return { number: i.number, title: i.title ?? '', updatedAt: i.updated_at, comments };
+      return {
+        number: i.number,
+        title: i.title ?? '',
+        updatedAt: i.updated_at,
+        body: i.body ?? '',
+        comments,
+      };
     }),
   );
 }

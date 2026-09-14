@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { fail } from './log';
 
-const CLIENT_COMMANDS = ['get-ticket', 'list-issues', 'submit-verdict'];
+const CLIENT_COMMANDS = ['get-ticket', 'list-issues', 'submit-verdict', 'queue-comment'];
 
 function runClientCommand(command: string, args: string[], port: number): void {
   const phase = args[0] ?? '';
@@ -17,6 +17,15 @@ function runClientCommand(command: string, args: string[], port: number): void {
     method = 'POST';
     body = JSON.stringify({ phase, verdict });
     path = '/submit-verdict';
+  } else if (command === 'queue-comment') {
+    const issue = Number(phase);
+    const comment = args[1];
+    if (!Number.isInteger(issue) || issue <= 0 || comment === undefined || comment === '') {
+      fail('queue-comment needs: iteration queue-comment <issue-number> "<comment text>"');
+    }
+    method = 'POST';
+    body = JSON.stringify({ issue, by: process.env.ITERATION_PHASE || 'agent', body: comment });
+    path = '/queue-comment';
   } else {
     path = `/${command}?id=${encodeURIComponent(phase)}`;
   }

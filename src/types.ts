@@ -23,6 +23,7 @@ export interface IssueInfo {
   number: number;
   title: string;
   updatedAt: string;
+  body: string;
   comments: IssueComment[];
 }
 

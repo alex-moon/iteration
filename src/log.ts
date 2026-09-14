@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const LOG_DIR = 'logs';
+export const LOG_DIR = '.iteration/logs';
 fs.mkdirSync(LOG_DIR, { recursive: true });
 export const LOG_FILE = path.join(
   LOG_DIR,

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { IssueInfo, PassSnapshot, PlanDoc, Repo } from './types';
+import type { IssueComment, IssueInfo, PassSnapshot, PlanDoc, Repo } from './types';
 import { fetchIssues, fetchOpenPrs, fetchPendingReviewComments } from './github';
 import { log } from './log';
 
@@ -14,13 +14,15 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+export const ITERATION_DIR = '.iteration';
+export const PLAN_DOCS_DIR = path.join(ITERATION_DIR, 'docs');
+
 export function readPlanDocs(issues: IssueInfo[]): PlanDoc[] {
-  const docsDir = 'docs';
-  if (!fs.existsSync(docsDir)) return [];
+  if (!fs.existsSync(PLAN_DOCS_DIR)) return [];
   const byIssue = new Set(issues.map((i) => i.number));
   const out: PlanDoc[] = [];
   const files = fs
-    .readdirSync(docsDir)
+    .readdirSync(PLAN_DOCS_DIR)
     .filter((f) => f.startsWith('plan-') && f.endsWith('.md'))
     .sort();
   for (const f of files) {
@@ -30,8 +32,8 @@ export function readPlanDocs(issues: IssueInfo[]): PlanDoc[] {
     if (!byIssue.has(issue)) continue;
     out.push({
       issue,
-      file: path.join(docsDir, f),
-      content: fs.readFileSync(path.join(docsDir, f), 'utf8'),
+      file: path.join(PLAN_DOCS_DIR, f),
+      content: fs.readFileSync(path.join(PLAN_DOCS_DIR, f), 'utf8'),
     });
   }
   return out;
@@ -53,7 +55,7 @@ export async function gatherSnapshot(repo: Repo, issues?: IssueInfo[]): Promise<
 
 export function refreshPlanDoc(issue: number): void {
   if (snapshot === null) return;
-  const fresh = readPlanDocs([{ number: issue, title: '', updatedAt: '', comments: [] }]);
+  const fresh = readPlanDocs([{ number: issue, title: '', updatedAt: '', body: '', comments: [] }]);
   if (fresh.length === 0) return;
   const doc = snapshot.planDocs.find((d) => d.issue === issue);
   if (doc) {
@@ -73,4 +75,47 @@ export function setGatheredSnapshot(s: PassSnapshot): void {
   log(
     `Snapshot gathered: ${s.issues.length} open issues, ${s.openPrs.length} open PRs at ${s.gatheredAt}`,
   );
+}
+
+function renderComments(comments: IssueComment[]): string {
+  if (comments.length === 0) return '    (no comments)';
+  return comments
+    .map((c) => `    - ${c.by} at ${c.at}: ${c.body.replace(/\n/g, ' | ')}`)
+    .join('\n');
+}
+
+/** Full frozen snapshot, injected inline into the triage prompt. */
+export function snapshotText(): string {
+  const s = snapshot;
+  if (s === null) return '(no snapshot gathered yet)';
+  const issues = s.issues
+    .map(
+      (i) =>
+        `- #${i.number} "${i.title}" (updated ${i.updatedAt})\n` +
+        `    Body: ${i.body.replace(/\n/g, ' | ')}\n` +
+        renderComments(i.comments),
+    )
+    .join('\n');
+  const prs =
+    s.openPrs.length === 0
+      ? '(no open PRs)'
+      : s.openPrs.map((p) => `- PR #${p.number} "${p.title}" (head ${p.headRefName})`).join('\n');
+  const plans =
+    s.planDocs.length === 0
+      ? '(no plan docs on disk)'
+      : s.planDocs.map((d) => `- ${d.file}`).join('\n');
+  return `OPEN ISSUES (with full comment conversations):\n${issues}\nOPEN PRs:\n${prs}\nPLAN DOCS ON DISK:\n${plans}`;
+}
+
+/** Everything for a single ticket, injected inline into its dedicated phases. */
+export function ticketText(issue: number): string {
+  const s = snapshot;
+  const i = s?.issues.find((x) => x.number === issue);
+  if (s === null || i === undefined) return `(ticket #${issue} not in the current snapshot)`;
+  const prs = s.openPrs.filter((p) => p.headRefName.split('-')[0]?.includes(String(issue)));
+  return `TICKET #${issue} "${i.title}" (updated ${i.updatedAt})
+Body:
+${i.body}
+Comments:
+${renderComments(i.comments)}${prs.length > 0 ? `\nOpen PRs: ${prs.map((p) => `#${p.number} "${p.title}" (${p.headRefName})`).join(', ')}` : ''}`;
 }

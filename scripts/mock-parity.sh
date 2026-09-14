@@ -13,6 +13,8 @@ BIN="$REPO_DIR/bin/iteration.js"
 export MOCK_STATE_FILE="$WORK/mock-state.json"
 export ITERATION_AGENT_CMD="$REPO_DIR/scripts/mock-agent.js"
 export MOCK_COUNTS="$WORK/gh-counts.log"
+# Mock runs never post to GitHub: the consolidated flush logs instead.
+export ITERATION_DRY_RUN=1
 
 mkdir -p "$WORK/shim"
 REAL_GH=$(command -v gh)
