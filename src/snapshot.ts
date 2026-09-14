@@ -6,7 +6,7 @@ import { log } from './log';
 
 let snapshot: PassSnapshot | null = null;
 
-export function currentSnapshot(): PassSnapshot | null {
+export function passSnapshot(): PassSnapshot | null {
   return snapshot;
 }
 
@@ -37,14 +37,14 @@ export function readPlanDocs(issues: IssueInfo[]): PlanDoc[] {
   return out;
 }
 
-export function gatherSnapshot(repo: Repo): PassSnapshot {
-  const issues = fetchIssues(repo);
-  const openPrs = fetchOpenPrs(repo);
+export async function gatherSnapshot(repo: Repo): Promise<PassSnapshot> {
+  const issues = await fetchIssues(repo);
+  const openPrs = await fetchOpenPrs(repo);
   return {
     gatheredAt: nowIso(),
     issues,
     openPrs,
-    pendingReviewComments: fetchPendingReviewComments(repo, openPrs.map((p) => p.number)),
+    pendingReviewComments: await fetchPendingReviewComments(repo, openPrs.map((p) => p.number)),
     planDocs: readPlanDocs(issues),
   };
 }
@@ -64,39 +64,6 @@ export function refreshPlanDoc(issue: number): void {
 
 export function planDocFor(issue: number): PlanDoc | null {
   return snapshot?.planDocs.find((d) => d.issue === issue) ?? null;
-}
-
-function snapshotPromptText(issue: number | null): string {
-  if (snapshot === null) {
-    return 'PASS SNAPSHOT unavailable; re-fetch whatever you need with gh.\n';
-  }
-  const issues = issue === null ? snapshot.issues : snapshot.issues.filter((i) => i.number === issue);
-  // Branch naming is per-repo; matching on the issue number keeps it repo-agnostic.
-  const prs =
-    issue === null
-      ? snapshot.openPrs
-      : snapshot.openPrs.filter((p) => p.headRefName.includes(`${issue}-`));
-  const prNumbers = new Set(prs.map((p) => p.number));
-  const pending = snapshot.pendingReviewComments.filter((c) => prNumbers.has(c.pr));
-  const plans = issue === null ? snapshot.planDocs : snapshot.planDocs.filter((d) => d.issue === issue);
-  return [
-    `PASS SNAPSHOT (gathered ${snapshot.gatheredAt}) — this is the state gathered once per pass;`,
-    'do not re-fetch it; individual gh calls for anything else you need remain available.',
-    `openIssues=${JSON.stringify(issues)}`,
-    `openPrs=${JSON.stringify(prs)}`,
-    `pendingReviewComments=${JSON.stringify(pending)}`,
-    `planDocs=${JSON.stringify(plans)}`,
-    '',
-  ]
-    .join('\n')
-    .trim();
-}
-
-export function snapshotBlock(issue: number | null): string {
-  return `PASS SNAPSHOT delivered below. The harness gathered it once this pass; phases must
-not re-run the same list gh calls (individual gh calls for anything unfinished keep working).
-
-${snapshotPromptText(issue)}`;
 }
 
 export function setGatheredSnapshot(s: PassSnapshot): void {

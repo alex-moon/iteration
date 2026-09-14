@@ -1,63 +1,55 @@
 import type { IssueComment, IssueInfo, PendingReviewFeedback, PrInfo, Repo } from './types';
-import { gh, ghAllowFail } from './shell';
+import { client } from './octokit';
 import { log } from './log';
 
-export function fetchIssues(repo: Repo): IssueInfo[] {
-  const raw = gh([
-    'issue',
-    'list',
-    '--repo',
-    repo.fullName,
-    '--state',
-    'open',
-    '--limit',
-    '50',
-    '--json',
-    'number,title,updatedAt',
-  ]);
-  const list = JSON.parse(raw) as { number: number; title: string; updatedAt: string }[];
-  return list.map((i) => {
-    const commentsRaw = ghAllowFail(
-      ['api', `repos/${repo.fullName}/issues/${i.number}/comments?per_page=50`],
-      `comment fetch for #${i.number}`,
-    );
-    let comments: IssueComment[] = [];
-    if (commentsRaw.trim() !== '') {
-      try {
-        comments = (
-          JSON.parse(commentsRaw) as {
-            body: string;
-            user: { login: string };
-            created_at: string;
-          }[]
-        ).map((c) => ({ by: c.user.login, at: c.created_at, body: c.body }));
-      } catch {
-        log(`comments for #${i.number} unparsable; treating as none`);
-      }
-    }
-    return { number: i.number, title: i.title, updatedAt: i.updatedAt, comments };
+const ISSUE_LIST_FIELDS = 'number,title,updatedAt';
+
+export async function fetchIssues(repo: Repo): Promise<IssueInfo[]> {
+  const { data: list } = await client().rest.issues.listForRepo({
+    owner: repo.owner,
+    repo: repo.name,
+    state: 'open',
+    per_page: 50,
   });
+  const issues = list.filter((i) => !('pull_request' in i));
+  return Promise.all(
+    issues.map(async (i) => {
+      let comments: IssueComment[] = [];
+      try {
+        const { data } = await client().rest.issues.listComments({
+          owner: repo.owner,
+          repo: repo.name,
+          issue_number: i.number,
+          per_page: 50,
+        });
+        comments = data.map((c) => ({
+          by: c.user?.login ?? 'unknown',
+          at: c.created_at,
+          body: c.body ?? '',
+        }));
+      } catch (err) {
+        log(`comments for #${i.number} fetch failed: ${(err as Error).message}`);
+      }
+      return { number: i.number, title: i.title ?? '', updatedAt: i.updated_at, comments };
+    }),
+  );
 }
 
-export function fetchOpenPrs(repo: Repo): PrInfo[] {
-  const raw = ghAllowFail(
-    [
-      'pr',
-      'list',
-      '--repo',
-      repo.fullName,
-      '--state',
-      'open',
-      '--json',
-      'number,title,headRefName,updatedAt',
-    ],
-    'pr list',
-  );
-  if (raw.trim() === '') return [];
+export async function fetchOpenPrs(repo: Repo): Promise<PrInfo[]> {
   try {
-    return JSON.parse(raw) as PrInfo[];
-  } catch {
-    log('gh pr list returned unparsable JSON');
+    const { data } = await client().rest.pulls.list({
+      owner: repo.owner,
+      repo: repo.name,
+      state: 'open',
+    });
+    return data.map((p) => ({
+      number: p.number,
+      title: p.title ?? '',
+      headRefName: p.head.ref,
+      updatedAt: p.updated_at,
+    }));
+  } catch (err) {
+    log(`open-pr list failed: ${(err as Error).message}`);
     return [];
   }
 }
@@ -66,8 +58,12 @@ export function fetchOpenPrs(repo: Repo): PrInfo[] {
  * PENDING reviews are invisible to the REST comment endpoints; read them via
  * the GraphQL reviews API instead.
  */
-export function fetchPendingReviewComments(repo: Repo, prNumbers: number[]): PendingReviewFeedback[] {
-  return prNumbers.flatMap((pr) => {
+export async function fetchPendingReviewComments(
+  repo: Repo,
+  prNumbers: number[],
+): Promise<PendingReviewFeedback[]> {
+  const results: PendingReviewFeedback[] = [];
+  for (const pr of prNumbers) {
     const query =
       '{ repository(owner: "' +
       repo.owner +
@@ -76,93 +72,70 @@ export function fetchPendingReviewComments(repo: Repo, prNumbers: number[]): Pen
       '") { pullRequest(number: ' +
       pr +
       ') { reviews(states: PENDING, first: 10) { nodes { author { login } comments(first: 50) { nodes { body path line } } } } } } }';
-    const raw = ghAllowFail(['api', 'graphql', '-f', `query=${query}`], `pending reviews for PR #${pr}`);
-    if (raw.trim() === '') return [];
     try {
-      const parsed = JSON.parse(raw) as {
-        data?: {
-          repository?: {
-            pullRequest?: {
-              reviews?: {
-                nodes?: {
-                  author?: { login?: string };
-                  comments?: { nodes?: { body: string; path: string; line: number | null }[] };
-                }[];
-              };
+      const parsed = (await client().graphql(query)) as {
+        repository?: {
+          pullRequest?: {
+            reviews?: {
+              nodes?: {
+                author?: { login?: string };
+                comments?: { nodes?: { body: string; path: string; line: number | null }[] };
+              }[];
             };
           };
         };
       };
-      const nodes = parsed.data?.repository?.pullRequest?.reviews?.nodes ?? [];
+      const nodes = parsed.repository?.pullRequest?.reviews?.nodes ?? [];
       const reviews = nodes.map((n) => ({
         author: n.author?.login ?? 'unknown',
         comments: (n.comments?.nodes ?? []).map((c) => ({ ...c })),
       }));
-      if (reviews.every((r) => r.comments.length === 0)) return [];
-      return [{ pr, reviews }];
+      if (reviews.some((r) => r.comments.length > 0)) {
+        results.push({ pr, reviews });
+      }
     } catch {
       log(`pending-review GraphQL read failed for PR #${pr}`);
-      return [];
     }
-  });
+  }
+  return results;
 }
 
-export function fetchIssueTitle(repo: Repo, issue: number): string {
-  const raw = ghAllowFail(
-    ['issue', 'view', String(issue), '--repo', repo.fullName, '--json', 'title'],
-    `issue view for #${issue}`,
-  );
+export async function fetchIssueTitle(repo: Repo, issue: number): Promise<string> {
   try {
-    return (JSON.parse(raw) as { title: string }).title ?? '';
-  } catch {
+    const { data } = await client().rest.issues.get({
+      owner: repo.owner,
+      repo: repo.name,
+      issue_number: issue,
+    });
+    return data.title ?? '';
+  } catch (err) {
+    log(`title fetch for #${issue} failed: ${(err as Error).message}`);
     return '';
   }
 }
 
-export function openPrForBranch(repo: Repo, branch: string): number | null {
-  const raw = ghAllowFail(
-    ['pr', 'list', '--repo', repo.fullName, '--head', branch, '--state', 'open', '--json', 'number'],
-    'pr list for branch',
-  );
-  if (raw.trim() === '') return null;
-  try {
-    const arr = JSON.parse(raw) as { number: number }[];
-    return arr[0]?.number ?? null;
-  } catch {
-    return null;
-  }
-}
-
 /** Full single-ticket payload served to agents by `iteration get-ticket <n>`. */
-export function fetchTicket(repo: Repo, issue: number): unknown {
-  const raw = gh(
-    [
-      'issue',
-      'view',
-      String(issue),
-      '--repo',
-      repo.fullName,
-      '--json',
-      'number,title,state,body,updatedAt,comments',
-    ],
-  );
-  const parsed = JSON.parse(raw) as {
-    number: number;
-    title: string;
-    state: string;
-    body: string;
-    updatedAt: string;
-    comments: { author?: { login?: string }; createdAt?: string; body?: string }[];
-  };
+export async function fetchTicket(repo: Repo, issue: number): Promise<unknown> {
+  const { data } = await client().rest.issues.get({
+    owner: repo.owner,
+    repo: repo.name,
+    issue_number: issue,
+  });
+  const { data: comments } = await client().rest.issues.listComments({
+    owner: repo.owner,
+    repo: repo.name,
+    issue_number: issue,
+    per_page: 50,
+  });
   return {
-    number: parsed.number,
-    title: parsed.title,
-    state: parsed.state,
-    updatedAt: parsed.updatedAt,
-    body: parsed.body,
-    comments: parsed.comments.map((c) => ({
-      by: c.author?.login ?? 'unknown',
-      at: c.createdAt ?? '',
+    number: data.number,
+    title: data.title,
+    state: data.state,
+    updatedAt: data.updated_at,
+    body: data.body ?? '',
+    comments: comments.map((c) => ({
+      by: c.user?.login ?? 'unknown',
+      at: c.created_at,
       body: c.body ?? '',
     })),
   };

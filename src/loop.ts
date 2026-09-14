@@ -1,13 +1,15 @@
 import type { CheckVerdict, LoopDecisionVerdict, Repo } from './types';
 import { CHECK_SCHEMA, LOOP_DECISION_SCHEMA } from './types';
-import { sleepSeconds, git } from './shell';
+import { sleepSeconds } from './shell';
+import { checkoutBranch } from './git-client';
 import { log, fail } from './log';
 import { PASS_INTERVAL, STRIKE_LIMIT, getPriority, initCli, isOnce } from './config';
 import { validateCheck, validateLoopDecision } from './verdicts';
 import { agent } from './agent';
 import { addStrike, clearShutdown, loadLoopState, writeLoopState } from './loop-state';
-import { snapshotBlock } from './snapshot';
-import { runPass, setRepo, type PassOutcome } from './pass';
+import { stateCommandsBlock } from './wiring';
+import { repoInfo, runPass, setRepo, type PassOutcome } from './pass';
+import { warmTicketCache } from './orchestrator';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -15,8 +17,8 @@ function nowIso(): string {
 
 // ---- Loop-decision agent -----------------------------------------------------------------
 
-export function decideLoop(): boolean {
-  const v = agent<LoopDecisionVerdict>(
+export async function decideLoop(): Promise<boolean> {
+  const v = await agent<LoopDecisionVerdict>(
     'loop-decision',
     `You have just completed an iteration pass on the GitHub open
 issues of the repo. Recent activity is visible in logs/iteration-*.log, plan docs in docs/,
@@ -26,7 +28,7 @@ END the loop when: all open issues are meaningfully done or blocked, and what re
 only the user (answers to open questions, access, decisions) with nothing actionable left.
 Otherwise CONTINUE.
 
-${snapshotBlock(null)}
+${stateCommandsBlock('loop-decision', null, repoInfo())}
 Final line MUST be the single JSON object: ${LOOP_DECISION_SCHEMA}`,
     validateLoopDecision,
     LOOP_DECISION_SCHEMA,
@@ -48,7 +50,7 @@ Final line MUST be the single JSON object: ${LOOP_DECISION_SCHEMA}`,
  * 1: strikes exhausted, down tools. `countStrike=false` performs a strike-free
  * check (used for the final grace check before actually stopping).
  */
-export function checkShutdown(countStrike = true): 0 | 2 | 1 {
+export async function checkShutdown(countStrike = true): Promise<0 | 2 | 1> {
   const state = loadLoopState();
   if (state === null || state.mode !== 'decision' || state.decidedAt === null) return 0;
   const priority = getPriority();
@@ -58,7 +60,7 @@ export function checkShutdown(countStrike = true): 0 | 2 | 1 {
 Note: the user has marked issue #${priority} as PRIORITY - also check
 whether it specifically now shows new information.`
       : '';
-  const v = agent<CheckVerdict>(
+  const v = await agent<CheckVerdict>(
     'loop-check',
     `A previous iteration of this loop has already decided that all GitHub
 issues of this repo are either meaningfully done or blocked.
@@ -71,9 +73,10 @@ that decision:
 - new issue comments that ANSWER a previously blocking open question, add new
   requirements, or otherwise make meaningful work possible again;
 - new open issues or new open PRs.
-The PASS SNAPSHOT has the current open issues (with comments after the decision discussion),
-open PRs and plan docs; you do NOT need to re-run gh issue list / pr list.
+Current open issues (with comments), open PRs and plan docs come from the STATE
+COMMANDS block below; you do NOT need to re-run gh issue list / pr list.
 
+${stateCommandsBlock('loop-check', null, repoInfo())}
 Final line MUST be the single JSON object: ${CHECK_SCHEMA}`,
     validateCheck,
     CHECK_SCHEMA,
@@ -99,16 +102,17 @@ Final line MUST be the single JSON object: ${CHECK_SCHEMA}`,
  * strike-free shutdown check, and resume the loop if new information arrived.
  * Returns true only when the loop should keep going.
  */
-function graceResume(): boolean {
+async function graceResume(): Promise<boolean> {
   if (isOnce()) return false;
   sleepSeconds(PASS_INTERVAL);
-  return checkShutdown(false) === 0;
+  return (await checkShutdown(false)) === 0;
 }
 
 // ---- Main loop -------------------------------------------------------------------------------
 
-export function runIteration(repo: Repo): void {
+export async function runIteration(repo: Repo): Promise<void> {
   setRepo(repo);
+  await warmTicketCache(repo);
   try {
     initCli(process.argv.slice(2));
   } catch (err) {
@@ -123,9 +127,9 @@ export function runIteration(repo: Repo): void {
     const state = loadLoopState();
     let stale = false;
     if (state !== null && state.mode === 'decision' && state.decidedAt !== null) {
-      const outcome = checkShutdown();
+      const outcome = await checkShutdown();
       if (outcome === 1) {
-        if (graceResume()) continue;
+        if (await graceResume()) continue;
         log('Loop ended after shutdown decision exhausted its strikes');
         return;
       }
@@ -140,10 +144,10 @@ export function runIteration(repo: Repo): void {
 
     let outcome: PassOutcome;
     try {
-      outcome = runPass();
+      outcome = await runPass();
     } catch (err) {
       log(`Pass failed hard: ${(err as Error).message}`);
-      git(['checkout', 'main']);
+      await checkoutBranch("main");
       if (loadLoopState()?.mode === 'decision') {
         writeLoopState(0, 'strikes', nowIso(), (err as Error).message);
       }
@@ -152,7 +156,7 @@ export function runIteration(repo: Repo): void {
 
     if (outcome.stop) {
       // Strikes exhausted via triage ISSUE:NONE; final grace check, then stop.
-      if (graceResume()) continue;
+      if (await graceResume()) continue;
       log('Loop ended: all work blocked and strikes exhausted');
       return;
     }
@@ -160,7 +164,7 @@ export function runIteration(repo: Repo): void {
     if (outcome.productive) {
       let doContinue = false;
       try {
-        doContinue = decideLoop();
+        doContinue = await decideLoop();
       } catch (err) {
         log(`loop-decision failed hard: ${(err as Error).message}`);
         writeLoopState(0, 'strikes', nowIso(), `loop-decision failed: ${(err as Error).message}`);

@@ -1,20 +1,34 @@
 import type { LoopDecisionVerdict, Repo, TriageVerdict } from './types';
 import { LOOP_DECISION_SCHEMA, TRIAGE_SCHEMA } from './types';
-import { git } from './shell';
+
 import { log } from './log';
 import { STRIKE_LIMIT, getPriority } from './config';
 import { acceptAnyObject, validateLoopDecision, validateTriage } from './verdicts';
 import { agent } from './agent';
 import { addStrike } from './loop-state';
 import {
-  currentSnapshot,
+  passSnapshot,
   gatherSnapshot,
   planDocFor,
   refreshPlanDoc,
   setGatheredSnapshot,
-  snapshotBlock,
 } from './snapshot';
-import { fetchIssueTitle, fetchPendingReviewComments, openPrForBranch } from './github';
+import { fetchIssueTitle, fetchPendingReviewComments } from './github';
+import { openPrForBranch } from './octokit';
+import { stateCommandsBlock } from './wiring';
+import {
+  addAllAndCommit,
+  addPathAndCommit,
+  checkoutBranch,
+  hasChanges,
+  hasPathChanges,
+  listBranches,
+  currentBranch as currentBranchName,
+  pullBranch,
+  pushBranch,
+  repoRoot,
+} from './git-client';
+import { warmTicketCache } from './orchestrator';
 
 let currentBranch = 'main';
 let repo: Repo;
@@ -29,45 +43,39 @@ export function repoInfo(): Repo {
 
 // ---- Git helpers ---------------------------------------------------------------------
 
-function hasChanges(): boolean {
-  return git(['status', '--porcelain']).trim() !== '';
-}
 
-function repoRoot(): string {
-  return git(['rev-parse', '--show-toplevel']).trim();
-}
 
-function commitAndPush(msg: string): void {
-  if (hasChanges()) {
-    git(['add', '-A']);
-    git(['commit', '-m', msg]);
-    git(['push', '-u', 'origin', currentBranch, '--quiet']);
+
+
+async function commitAndPush(msg: string): Promise<void> {
+  if (await hasChanges()) {
+    await addAllAndCommit(msg);
+    await pushBranch(currentBranch);
     log(`Committed and pushed: ${msg}`);
   } else {
     log(`Nothing to commit for: ${msg}`);
   }
 }
 
-function commitPlan(issue: number): void {
-  const status = git(['status', '--porcelain', '--', 'docs']);
-  if (status.trim() === '') {
+async function commitPlan(issue: number): Promise<void> {
+  if (!(await hasPathChanges('docs'))) {
     log('No plan changes to commit');
     return;
   }
-  git(['add', 'docs']);
-  git(['commit', '-m', `docs: plan updates for #${issue}`]);
-  git(['push', '-u', 'origin', currentBranch, '--quiet']);
+  await addPathAndCommit('docs', `docs: plan updates for #${issue}`);
+  await pushBranch(currentBranch);
   log('Committed and pushed plan updates');
   refreshPlanDoc(issue);
 }
 
 // ---- Shared prompt frame ---------------------------------------------------------------
 
-function contextPrefix(issue: number): string {
-  return `You are working in the repo ${repoRoot()} on branch ${currentBranch} for GitHub issue #${issue}
-in ${repo.fullName}. The PASS SNAPSHOT below already holds the open issues with their comments, the
-open PRs (including PENDING review comments read via GraphQL) and the plan docs; individual
-gh calls for anything else remain available. Read docs/overview.md and docs/workflow.md for
+async function contextPrefix(issue: number): Promise<string> {
+  const root = await repoRoot();
+  return `You are working in the repo ${root} on branch ${currentBranch} for GitHub issue #${issue}
+in ${repo.fullName}. Ticket STATE arrives via the orchestrator client commands (see the
+STATE COMMANDS block below); individual gh calls for anything else remain available.
+Read docs/overview.md and docs/workflow.md for
 background if present. Follow the repo's existing conventions. Do NOT commit or push - the
 orchestrator does that. Before doing anything, confirm from the repo's own state (not just
 issue comments) that this ticket is neither already done nor blocked on the user: if it is,
@@ -92,8 +100,8 @@ priority issue is DONE or BLOCKED, classify it exactly as you would any other ti
       : '';
   return `You are triaging the open GitHub issues for repo ${repo.fullName} and picking the
 next one to work on. Do NOT trust issue state alone: judge each ticket from the repo itself.
-The PASS SNAPSHOT has the open issues with their full comment conversations, the open PRs
-(with PENDING review comments where present) and the plan docs per issue - you do NOT need
+The STATE COMMANDS block has the open issues with their full comment conversations, the open PRs
+and the plan docs per issue - you do NOT need
 to re-run gh issue list / gh pr list; only post issue comments or fetch detail that is
 genuinely missing.${priorityNote}
 1. Classify each issue as exactly one of:
@@ -113,16 +121,16 @@ genuinely missing.${priorityNote}
 4. Final line MUST be the single JSON object: ${TRIAGE_SCHEMA}`;
 }
 
-export function triagePhase(): TriageVerdict {
-  const v = agent<TriageVerdict>(
+export async function triagePhase(): Promise<TriageVerdict> {
+  const v = await agent<TriageVerdict>(
     'triage-tickets',
     `${triagePrompt()}
 
-${snapshotBlock(null)}`,
+${stateCommandsBlock('triage-tickets', null, repo)}`,
     validateTriage,
     TRIAGE_SCHEMA,
   );
-  const snapshot = currentSnapshot();
+  const snapshot = passSnapshot();
   if (v.kind === 'issue' && snapshot !== null && !snapshot.issues.some((i) => i.number === v.issue)) {
     throw new Error(`triage returned issue ${v.issue} which is not in the current snapshot`);
   }
@@ -131,23 +139,20 @@ ${snapshotBlock(null)}`,
 
 // ---- Branch helpers ------------------------------------------------------------------------
 
-export function ensureBranch(issue: number): string {
-  const branches = git(['branch', '-a', '--format=%(refname:short)'])
-    .split('\n')
-    .map((b) => b.trim())
-    .filter(Boolean);
+export async function ensureBranch(issue: number): Promise<string> {
+  const branches = await listBranches();
   // Match on the issue number so the convention stays repo-agnostic.
   const match = branches.find((b) => b.includes(`/${issue}-`));
   if (match) {
     const branch = match.replace(/^origin\//, '');
-    git(['checkout', branch]);
-    const pulled = git(['pull', 'origin', branch, '--quiet']);
-    if (pulled === '' && git(['rev-parse', '--abbrev-ref', 'HEAD']).trim() !== branch) {
+    await checkoutBranch(branch);
+    const pulledOk = await pullBranch(branch);
+    if (!pulledOk && (await currentBranchName()) !== branch) {
       log('pull failed; continuing with local state');
     }
     return branch;
   }
-  const title = fetchIssueTitle(repo, issue);
+  const title = await fetchIssueTitle(repo, issue);
   const words = title
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, ' ')
@@ -157,7 +162,7 @@ export function ensureBranch(issue: number): string {
     .join('-');
   const summary = words === '' ? 'iteration' : words;
   const branch = `feat/${issue}-${summary}`;
-  git(['checkout', '-b', branch, 'origin/main']);
+  await checkoutBranch(branch, 'origin/main');
   log(`Created branch ${branch}`);
   return branch;
 }
@@ -169,11 +174,12 @@ export interface PassOutcome {
   stop: boolean;
 }
 
-export function runPass(): PassOutcome {
-  setGatheredSnapshot(gatherSnapshot(repo));
+export async function runPass(): Promise<PassOutcome> {
+  await warmTicketCache(repo);
+  setGatheredSnapshot(await gatherSnapshot(repo));
 
   // ---- Phase 0: triage ----
-  const pick = triagePhase();
+  const pick = await triagePhase();
   if (pick.kind === 'none') {
     log('Triage verdict: none');
     if (!addStrike('strikes', 'triage returned ISSUE:NONE')) {
@@ -188,16 +194,16 @@ export function runPass(): PassOutcome {
   log(`Triage verdict: ISSUE:${ISSUE}`);
 
   // ---- Branch ----
-  currentBranch = ensureBranch(ISSUE);
+  currentBranch = await ensureBranch(ISSUE);
   refreshPlanDoc(ISSUE);
   log(`Working branch: ${currentBranch}`);
 
   // ---- Phase 1: plan-write ----
   const plan = planDocFor(ISSUE);
   if (plan === null) {
-    agent<unknown>(
+    await agent<unknown>(
       'plan-write',
-      `${contextPrefix(ISSUE)}
+      `${await contextPrefix(ISSUE)}
 
 Write a plan at docs/plan-${ISSUE}-<summary>.md (summary matches the branch name suffix). It
 must be:
@@ -210,7 +216,7 @@ Final line MUST be the single JSON object: {}`,
       '{}',
     );
     refreshPlanDoc(ISSUE);
-    commitPlan(ISSUE);
+    await commitPlan(ISSUE);
   } else {
     log(`Plan doc already exists: ${planDocFor(ISSUE)?.file}`);
   }
@@ -220,9 +226,9 @@ Final line MUST be the single JSON object: {}`,
   if (planAfterWrite === null) {
     log('No plan file; skipping hardening');
   } else {
-    agent<unknown>(
+    await agent<unknown>(
       'plan-review',
-      `${contextPrefix(ISSUE)}
+      `${await contextPrefix(ISSUE)}
 
 The plan is at ${planAfterWrite.file}. Review it and revise the file to make it:
 a) more detailed: flesh out thin tasks into concrete steps; move anything already answered
@@ -235,22 +241,22 @@ Final line MUST be the single JSON object: {}`,
       acceptAnyObject,
       '{}',
     );
-    commitPlan(ISSUE);
+    await commitPlan(ISSUE);
   }
 
   const planRef = planDocFor(ISSUE)?.file ?? 'no plan doc exists - work directly from the issue';
 
   // ---- Phase 3: implement ----
-  if (hasChanges()) {
+  if (await hasChanges()) {
     log('Dirty worktree; skipping implement phase');
   } else {
-    agent<unknown>(
+    await agent<unknown>(
       'implement',
-      `${contextPrefix(ISSUE)}
+      `${await contextPrefix(ISSUE)}
 The plan is at ${planRef}.
 
-Read the issue comments in the PASS SNAPSHOT first for answers to open questions - do only
-work that is no longer blocked by an open question. Deliver ONE stable, self-contained piece
+Read the issue comments via iteration get-ticket (they hold the answers to open
+questions) first - do only work that is no longer blocked by an open question. Deliver ONE stable, self-contained piece
 of work: either a real deliverable for the ticket, or an intermediary that a later iteration
 can build on. Verify it (relevant subset of npm run lint, npm test, npm run typecheck) before
 leaving it in the working tree. Commit nothing.
@@ -262,9 +268,9 @@ Final line MUST be the single JSON object: {}`,
   commitAndPush(`feat: implement a deliverable for #${ISSUE}`);
 
   // ---- Phase 4: critic ----
-  agent<unknown>(
+  await agent<unknown>(
     'critic',
-    `${contextPrefix(ISSUE)}
+    `${await contextPrefix(ISSUE)}
 The plan is at ${planRef}. Aggressively criticise the work delivered on this branch
 (git log/diff vs origin/main). Try to break it: run the relevant tests and npm run ci,
 look for bugs, edge cases, missed requirements, and plan drift. Then:
@@ -280,25 +286,19 @@ Final line MUST be the single JSON object: {}`,
   commitAndPush(`test/hardening: critic pass for #${ISSUE}`);
 
   // ---- Phase 4.5: address PR review comments ----
-  const prNum = openPrForBranch(repo, currentBranch);
+  const prNum = await openPrForBranch(repo, currentBranch);
   if (prNum !== null) {
-    // Refresh pending-review data for this specific PR (reviews may have
-    // arrived since the snapshot at the top of the pass).
-    const snapshot = currentSnapshot();
-    if (snapshot !== null) {
-      snapshot.pendingReviewComments = fetchPendingReviewComments(repo, [prNum]).concat(
-        snapshot.pendingReviewComments.filter((p) => p.pr !== prNum),
-      );
-    }
-    agent<unknown>(
+    const pendingForPr = await fetchPendingReviewComments(repo, [prNum]);
+    const snapshot = passSnapshot();
+    await agent<unknown>(
       'pr-review-rectify',
-      `${contextPrefix(ISSUE)}
+      `${await contextPrefix(ISSUE)}
 
-An open PR (#${prNum}) targets main for this branch. Read its review comments and rectify
-them in the working tree:
-- the PR and its reviews, including PENDING review comments, are in the PASS SNAPSHOT;
-- address every actionable comment: make the requested change, or reply/post on the issue
-  why it is handled elsewhere (e.g. split into its own ticket).
+An open PR (#${prNum}) targets main for this branch. Its PENDING review comments are read
+via GraphQL by the harness and injected below; the PR itself is open on GitHub for detail.
+pendingReviewComments=${JSON.stringify(pendingForPr)}
+Address every actionable comment: make the requested change, or reply/post on the issue
+why it is handled elsewhere (e.g. split into its own ticket).
 Verify with the relevant tests/npm run ci. Commit nothing.
 Final line MUST be the single JSON object: {}`,
       acceptAnyObject,
@@ -308,18 +308,18 @@ Final line MUST be the single JSON object: {}`,
   }
 
   // ---- PR decision ----
-  prDecisionPhase(ISSUE);
+  await prDecisionPhase(ISSUE);
 
   log(`Pass complete for issue #${ISSUE} (${currentBranch})`);
-  git(['checkout', 'main']);
+  await checkoutBranch('main');
   return { productive: true, stop: false };
 }
 
-function prDecisionPhase(issue: number): void {
+async function prDecisionPhase(issue: number): Promise<void> {
   const planFile = planDocFor(issue)?.file;
-  agent<LoopDecisionVerdict>(
+  await agent<LoopDecisionVerdict>(
     'pr-decision',
-    `${contextPrefix(issue)}
+    `${await contextPrefix(issue)}
 ${planFile ? `The plan is at ${planFile}.` : ''}
 
 Decide whether this ticket is meaningfully done: a real deliverable exists, verification

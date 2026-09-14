@@ -1,54 +1,82 @@
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import fs from 'node:fs';
 import { LOG_FILE, log } from './log';
 import type { Validator } from './verdicts';
 import { extractJsonVerdict } from './verdicts';
+import { takeSubmittedVerdict } from './submit-state';
+
+const execFileAsync = promisify(execFile);
 
 /**
- * Runs `opencode run --auto --title <title> <prompt>`, tees the transcript
- * to the pass log, then extracts and validates the final JSON verdict. On
- * invalid output the agent is retried exactly once with the schema included;
- * a second failure throws (a logged hard failure — never silently skipped).
+ * The agent binary is injectable so mock runs never spawn a real agent:
+ * ITERATION_AGENT_CMD holds the full command line ("node mock-agent.js ..."),
+ * defaulting to opencode when unset.
  */
-export function agent<T>(title: string, prompt: string, validate: Validator, retrySchema: string): T {
-  log(`phase: ${title}`);
-  let output = runAgentRaw(title, prompt);
-  let verdict = extractJsonVerdict(output);
-  if (verdict !== null) {
-    const err = validate(verdict);
-    if (err === null) return verdict as T;
-    log(`phase ${title}: invalid verdict (${err}); one retry with schema`);
-    output = runAgentRaw(
-      title,
-      `${prompt}\n\nYour previous reply was rejected: ${err}\nFinal line MUST be a single JSON object matching: ${retrySchema}`,
-    );
-    verdict = extractJsonVerdict(output);
-    if (verdict === null) throw new Error(`phase ${title}: retry produced no JSON verdict`);
-    const err2 = validate(verdict);
-    if (err2 !== null) throw new Error(`phase ${title}: retry verdict still invalid (${err2})`);
-    return verdict as T;
-  }
-  log(`phase ${title}: no JSON verdict in output; one retry with schema`);
-  output = runAgentRaw(
-    title,
-    `${prompt}\n\nYour previous reply had no parsable JSON verdict.\nFinal line MUST be a single JSON object matching: ${retrySchema}`,
-  );
-  verdict = extractJsonVerdict(output);
-  if (verdict === null) throw new Error(`phase ${title}: retry produced no JSON verdict`);
-  const err3 = validate(verdict);
-  if (err3 !== null) throw new Error(`phase ${title}: retry verdict invalid (${err3})`);
-  return verdict as T;
+export function agentCommand(): string[] {
+  const spec = process.env.ITERATION_AGENT_CMD;
+  return spec === undefined || spec.trim() === '' ? ['opencode'] : spec.split(' ').filter(Boolean);
 }
 
-export function runAgentRaw(title: string, prompt: string): string {
+/**
+ * Runs the agent phase (async, so the orchestrator's HTTP server stays live
+ * and mid-phase client calls succeed), tees the transcript to the pass log,
+ * then validates the final JSON verdict. A verdict already submitted over
+ * `iteration submit-verdict` takes precedence. On invalid output the agent is
+ * retried exactly once with the schema included; a second failure throws
+ * (a logged hard failure — never silently skipped).
+ */
+export async function agent<T>(title: string, prompt: string, validate: Validator, retrySchema: string): Promise<T> {
+  log(`phase: ${title}`);
+  const submitted = takeSubmittedVerdict(title);
+  if (submitted !== null) {
+    const submittedErr = validate(submitted);
+    if (submittedErr === null) {
+      log(`phase ${title}: using verdict submitted via the orchestrator`);
+      return submitted as T;
+    }
+    log(`phase ${title}: submitted verdict rejected (${submittedErr}); parsing phase output`);
+  }
+
+  let output = await runAgentRaw(title, prompt);
+  const first = check(output, validate);
+  if (first.ok) return first.value as T;
+  log(`phase ${title}: ${first.reason}; one retry with schema`);
+  output = await runAgentRaw(
+    title,
+    `${prompt}\n\nYour previous reply failed: ${first.reason}\nFinal line MUST be a single JSON object matching: ${retrySchema}`,
+  );
+  const second = check(output, validate);
+  if (second.ok) return second.value as T;
+  throw new Error(`phase ${title}: retry also invalid (${second.reason})`);
+}
+
+function check(
+  output: string,
+  validate: Validator,
+): { ok: boolean; value?: unknown; reason: string } {
+  const verdict = extractJsonVerdict(output);
+  if (verdict === null) return { ok: false, reason: 'no parsable JSON verdict' };
+  const err = validate(verdict);
+  if (err !== null) return { ok: false, reason: `invalid verdict (${err})` };
+  return valid(verdict);
+}
+
+function valid(value: unknown): { ok: boolean; value: unknown; reason: string } {
+  return { ok: true, value, reason: '' };
+}
+
+export async function runAgentRaw(title: string, prompt: string): Promise<string> {
+  const cmd = agentCommand();
   let out = '';
   try {
-    out = execFileSync('opencode', ['run', '--auto', '--title', title, prompt], {
+    const res = await execFileAsync(cmd[0]!, cmd.slice(1).concat([prompt]), {
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
     });
+    out = res.stdout;
   } catch (err) {
-    log(`opencode phase ${title} exited non-zero`);
+    log(`${cmd[0]} phase ${title} exited non-zero`);
     out = String((err as { stdout?: unknown }).stdout ?? '');
   }
   fs.appendFileSync(LOG_FILE, `----- phase ${title} -----\n${out}\n----- end ${title} -----\n`);
