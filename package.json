@@ -1,0 +1,26 @@
+{
+  "name": "iteration",
+  "version": "0.1.0",
+  "description": "Iteration-loop orchestrator over GitHub issues: npx iteration starts the orchestrator; agents call `iteration get-ticket <n>` for cached ticket state.",
+  "license": "LICENSE",
+  "bin": {
+    "iteration": "bin/iteration.js"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "link": "npm link"
+  },
+  "dependencies": {
+    "@octokit/rest": "^22.0.1",
+    "simple-git": "^3.36.0",
+    "tsx": "^4.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

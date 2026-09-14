@@ -1,0 +1,76 @@
+import simpleGit, { type SimpleGit } from 'simple-git';
+import { fail } from './log';
+import type { Repo } from './types';
+
+/**
+ * Every git operation in the repo goes through this simple-git instance
+ * (Octokit handles GitHub API reads separately in github.ts).
+ */
+
+function gitClient(): SimpleGit {
+  return simpleGit({ timeout: { block: 10 * 60_000 } });
+}
+
+export async function hasChanges(): Promise<boolean> {
+  return (await gitClient().status(['--porcelain'])).isClean() === false;
+}
+
+export async function hasPathChanges(path: string): Promise<boolean> {
+  const status = await gitClient().status(['--porcelain', '--', path]);
+  return status.files.length > 0;
+}
+
+export async function repoRoot(): Promise<string> {
+  return (await gitClient().raw(['rev-parse', '--show-toplevel'])).trim();
+}
+
+export async function addAllAndCommit(msg: string): Promise<void> {
+  await gitClient().add(['-A']);
+  await gitClient().commit(msg);
+}
+
+export async function addPathAndCommit(path: string, msg: string): Promise<void> {
+  await gitClient().add([path]);
+  await gitClient().commit(msg);
+}
+
+export async function pushBranch(branch: string): Promise<void> {
+  await gitClient().push(['-u', 'origin', branch, '--quiet']);
+}
+
+export async function checkoutBranch(branch: string, newFrom?: string): Promise<void> {
+  if (newFrom !== undefined) await gitClient().checkout(['-b', branch, newFrom]);
+  else await gitClient().checkout(branch);
+}
+
+export async function pullBranch(branch: string): Promise<boolean> {
+  try {
+    await gitClient().pull('origin', branch, ['--quiet']);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function listBranches(): Promise<string[]> {
+  return (await gitClient().branch(['-a', '--format=%(refname:short)'])).all;
+}
+
+export async function currentBranch(): Promise<string> {
+  return (await gitClient().raw(['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+}
+
+/** Detects the GitHub repo from the origin remote (ssh or https URL); fails clearly if absent. */
+export async function detectRepoFromOrigin(): Promise<Repo> {
+  let url = '';
+  try {
+    url = (await gitClient().raw(['remote', 'get-url', 'origin'])).trim();
+  } catch {
+    fail('Cannot detect repo: no origin remote. Run from a GitHub repo with an origin remote.');
+  }
+  const m = /github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url);
+  if (!m || !m[1] || !m[2]) {
+    fail(`Cannot detect a GitHub repo from origin URL: ${url}`);
+  }
+  return { owner: m[1]!, name: m[2]!, fullName: `${m[1]}/${m[2]}` };
+}
