@@ -1,5 +1,5 @@
 import http from 'node:http';
-import type { PassSnapshot, Repo } from './types';
+import type { IssueInfo, PassSnapshot, Repo } from './types';
 import { fetchIssues, fetchTicket } from './github';
 import { log } from './log';
 import { recordSubmittedVerdict } from './submit-state';
@@ -20,8 +20,8 @@ function readPostBody(req: http.IncomingMessage): Promise<string> {
 
 const cache: TicketCache = new Map();
 
-/** Warm (or refresh) the cache with the open issues incl. comment threads: called once per pass. */
-export async function warmTicketCache(repo: Repo): Promise<number> {
+/** Refresh the cache with the open issues incl. comment threads; called exactly once per pass. */
+export async function warmTicketCache(repo: Repo): Promise<IssueInfo[]> {
   try {
     const issues = await fetchIssues(repo);
     cache.delete('open-issues');
@@ -30,10 +30,10 @@ export async function warmTicketCache(repo: Repo): Promise<number> {
       cache.set(String(issue.number), issue);
     }
     log(`ticket cache refreshed: ${issues.length} open issues`);
-    return issues.length;
+    return issues;
   } catch (err) {
     log(`ticket-cache refresh failed: ${(err as Error).message}`);
-    return 0;
+    return [];
   }
 }
 
@@ -111,7 +111,6 @@ export async function runOrchestrator(): Promise<void> {
   let server: http.Server | null = null;
   try {
     const repo = await detectRepoFromOrigin();
-    await warmTicketCache(repo);
     server = await serve(repo);
     const addr = server.address();
     const port = typeof addr === 'object' && addr !== null ? addr.port : 0;

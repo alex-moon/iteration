@@ -70,11 +70,11 @@ async function commitPlan(issue: number): Promise<void> {
 
 // ---- Shared prompt frame ---------------------------------------------------------------
 
-async function contextPrefix(issue: number): Promise<string> {
+async function contextPrefix(issue: number, phase: string): Promise<string> {
   const root = await repoRoot();
   return `You are working in the repo ${root} on branch ${currentBranch} for GitHub issue #${issue}
-in ${repo.fullName}. Ticket STATE arrives via the orchestrator client commands (see the
-STATE COMMANDS block below); individual gh calls for anything else remain available.
+in ${repo.fullName}. Ticket STATE arrives via the orchestrator client commands:
+${stateCommandsBlock(phase, issue, repo)}
 Read docs/overview.md and docs/workflow.md for
 background if present. Follow the repo's existing conventions. Do NOT commit or push - the
 orchestrator does that. Before doing anything, confirm from the repo's own state (not just
@@ -175,8 +175,8 @@ export interface PassOutcome {
 }
 
 export async function runPass(): Promise<PassOutcome> {
-  await warmTicketCache(repo);
-  setGatheredSnapshot(await gatherSnapshot(repo));
+  const warmedIssues = await warmTicketCache(repo);
+  setGatheredSnapshot(await gatherSnapshot(repo, warmedIssues));
 
   // ---- Phase 0: triage ----
   const pick = await triagePhase();
@@ -203,7 +203,7 @@ export async function runPass(): Promise<PassOutcome> {
   if (plan === null) {
     await agent<unknown>(
       'plan-write',
-      `${await contextPrefix(ISSUE)}
+      `${await contextPrefix(ISSUE, "plan-write")}
 
 Write a plan at docs/plan-${ISSUE}-<summary>.md (summary matches the branch name suffix). It
 must be:
@@ -228,7 +228,7 @@ Final line MUST be the single JSON object: {}`,
   } else {
     await agent<unknown>(
       'plan-review',
-      `${await contextPrefix(ISSUE)}
+      `${await contextPrefix(ISSUE, "plan-review")}
 
 The plan is at ${planAfterWrite.file}. Review it and revise the file to make it:
 a) more detailed: flesh out thin tasks into concrete steps; move anything already answered
@@ -252,7 +252,7 @@ Final line MUST be the single JSON object: {}`,
   } else {
     await agent<unknown>(
       'implement',
-      `${await contextPrefix(ISSUE)}
+      `${await contextPrefix(ISSUE, "implement")}
 The plan is at ${planRef}.
 
 Read the issue comments via iteration get-ticket (they hold the answers to open
@@ -270,7 +270,7 @@ Final line MUST be the single JSON object: {}`,
   // ---- Phase 4: critic ----
   await agent<unknown>(
     'critic',
-    `${await contextPrefix(ISSUE)}
+    `${await contextPrefix(ISSUE, "critic")}
 The plan is at ${planRef}. Aggressively criticise the work delivered on this branch
 (git log/diff vs origin/main). Try to break it: run the relevant tests and npm run ci,
 look for bugs, edge cases, missed requirements, and plan drift. Then:
@@ -292,7 +292,7 @@ Final line MUST be the single JSON object: {}`,
     const snapshot = passSnapshot();
     await agent<unknown>(
       'pr-review-rectify',
-      `${await contextPrefix(ISSUE)}
+      `${await contextPrefix(ISSUE, "pr-review-rectify")}
 
 An open PR (#${prNum}) targets main for this branch. Its PENDING review comments are read
 via GraphQL by the harness and injected below; the PR itself is open on GitHub for detail.
@@ -319,7 +319,7 @@ async function prDecisionPhase(issue: number): Promise<void> {
   const planFile = planDocFor(issue)?.file;
   await agent<LoopDecisionVerdict>(
     'pr-decision',
-    `${await contextPrefix(issue)}
+    `${await contextPrefix(issue, "pr-decision")}
 ${planFile ? `The plan is at ${planFile}.` : ''}
 
 Decide whether this ticket is meaningfully done: a real deliverable exists, verification

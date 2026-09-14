@@ -13,7 +13,16 @@ let octokit: Octokit | null = null;
 export function client(): Octokit {
   if (octokit === null) {
     const token = process.env.GH_TOKEN ?? readGhToken();
-    octokit = new Octokit(token === undefined ? {} : { auth: token });
+    octokit = new Octokit({
+      auth: token,
+      request: { timeout: 60_000 },
+    });
+    // Parity evidence: every REST/GraphQL read is logged once, so mock runs can
+    // verify the one-list-call-per-pass budget.
+    octokit.hook.wrap('request', async (request, options) => {
+      log(`gh-api: ${options.method?.toUpperCase() ?? 'GET'} ${options.url}`);
+      return request(options);
+    });
   }
   return octokit;
 }

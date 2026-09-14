@@ -39,7 +39,11 @@ export async function agent<T>(title: string, prompt: string, validate: Validato
   }
 
   let output = await runAgentRaw(title, prompt);
-  const first = check(output, validate);
+  // A verdict submitted over `iteration submit-verdict` during the phase call wins.
+  const midSubmission = takeSubmittedVerdict(title);
+  if (midSubmission !== null) log(`phase ${title}: verdict submitted via the orchestrator`);
+  const first =
+    midSubmission !== null ? finalize(midSubmission, validate) : check(output, validate);
   if (first.ok) return first.value as T;
   log(`phase ${title}: ${first.reason}; one retry with schema`);
   output = await runAgentRaw(
@@ -48,7 +52,25 @@ export async function agent<T>(title: string, prompt: string, validate: Validato
   );
   const second = check(output, validate);
   if (second.ok) return second.value as T;
+  const midRetrySubmission = takeSubmittedVerdict(title);
+  if (midRetrySubmission !== null) {
+    const finalVerdict = finalize(midRetrySubmission, validate);
+    if (finalVerdict.ok) {
+      log(`phase ${title}: retry verdict submitted via the orchestrator`);
+      return finalVerdict.value as T;
+    }
+    throw new Error(`phase ${title}: retry also invalid (${finalVerdict.reason})`);
+  }
   throw new Error(`phase ${title}: retry also invalid (${second.reason})`);
+}
+
+function finalize(
+  value: unknown,
+  validate: Validator,
+): { ok: boolean; value?: unknown; reason: string } {
+  const err = validate(value);
+  if (err !== null) return { ok: false, reason: `invalid verdict (${err})` };
+  return { ok: true, value, reason: '' };
 }
 
 function check(
@@ -73,11 +95,14 @@ export async function runAgentRaw(title: string, prompt: string): Promise<string
     const res = await execFileAsync(cmd[0]!, cmd.slice(1).concat([prompt]), {
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
+      env: { ...process.env, ITERATION_PHASE: title },
     });
     out = res.stdout;
   } catch (err) {
     log(`${cmd[0]} phase ${title} exited non-zero`);
     out = String((err as { stdout?: unknown }).stdout ?? '');
+    const stderr = String((err as { stderr?: unknown }).stderr ?? '').trim();
+    if (stderr !== '') log(`${cmd[0]} phase ${title} stderr: ${stderr}`);
   }
   fs.appendFileSync(LOG_FILE, `----- phase ${title} -----\n${out}\n----- end ${title} -----\n`);
   return out;

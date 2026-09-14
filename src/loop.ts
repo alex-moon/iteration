@@ -112,7 +112,6 @@ async function graceResume(): Promise<boolean> {
 
 export async function runIteration(repo: Repo): Promise<void> {
   setRepo(repo);
-  await warmTicketCache(repo);
   try {
     initCli(process.argv.slice(2));
   } catch (err) {
@@ -147,6 +146,7 @@ export async function runIteration(repo: Repo): Promise<void> {
       outcome = await runPass();
     } catch (err) {
       log(`Pass failed hard: ${(err as Error).message}`);
+      process.exitCode = 1;
       await checkoutBranch("main");
       if (loadLoopState()?.mode === 'decision') {
         writeLoopState(0, 'strikes', nowIso(), (err as Error).message);

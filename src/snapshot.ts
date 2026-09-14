@@ -37,15 +37,17 @@ export function readPlanDocs(issues: IssueInfo[]): PlanDoc[] {
   return out;
 }
 
-export async function gatherSnapshot(repo: Repo): Promise<PassSnapshot> {
-  const issues = await fetchIssues(repo);
+export async function gatherSnapshot(repo: Repo, issues?: IssueInfo[]): Promise<PassSnapshot> {
+  // The warmed ticket cache already fetched the issue list once per pass; a
+  // preset issues array skips the duplicate list+comments round-trip.
+  const resolvedIssues = issues ?? (await fetchIssues(repo));
   const openPrs = await fetchOpenPrs(repo);
   return {
     gatheredAt: nowIso(),
-    issues,
+    issues: resolvedIssues,
     openPrs,
     pendingReviewComments: await fetchPendingReviewComments(repo, openPrs.map((p) => p.number)),
-    planDocs: readPlanDocs(issues),
+    planDocs: readPlanDocs(resolvedIssues),
   };
 }
 

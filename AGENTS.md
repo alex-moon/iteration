@@ -15,7 +15,8 @@ Rules:
 - To exercise pass/loop logic while developing, set `ITERATION_AGENT_CMD` to a mock
   runner (a script that prints canned JSON verdicts matching the phase schema).
   See `src/agent.ts` — the runner is injectable so tests and mock runs never
-  spawn a real agent.
+  spawn a real agent. `scripts/mock-parity.sh` is the ready-made full-pass mock
+  run (throwaway clone, no pushes).
 - Prefer unit-style tests and the orchestrator HTTP-server round-trips over
   running the full loop.
 

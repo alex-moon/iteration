@@ -18,14 +18,22 @@ old references. Refs #1 (closed).
 
 ## Checklist
 
-- [ ] Async agent phases (promisified `execFile`, verdict path unchanged).
-- [ ] Orchestrator serves `list-issues` and `submit-verdict` alongside
+- [x] Async agent phases (promisified `execFile`, verdict path unchanged).
+- [x] Orchestrator serves `list-issues` and `submit-verdict` alongside
       `get-ticket`.
-- [ ] Ticket cache refreshed once per pass (freshness decision), documented.
-- [ ] Phase prompts drop the inline PASS SNAPSHOT; agents use orchestrator
+- [x] Ticket cache refreshed once per pass (freshness decision), documented:
+      `warmTicketCache` runs inside each pass and its result is reused for the
+      snapshot, so there is exactly one set of list calls per pass; cache
+      misses on `get-ticket` still fall through to a live fetch.
+- [x] Phase prompts drop the inline PASS SNAPSHOT; agents use orchestrator
       commands, snapshot text kept only as a fallback when no port is set.
-- [ ] Audit agent-side gh calls; read-style calls routed, write-once calls
+- [x] Audit agent-side gh calls; read-style calls routed, write-once calls
       documented as intentional `gh` use.
-- [ ] `gh`/`git` child-process calls replaced by Octokit + simple-git.
-- [ ] Mocked end-to-end parity run: one pass, one set of gh list calls,
+- [x] `gh`/`git` child-process calls replaced by Octokit + simple-git.
+- [x] Mocked end-to-end parity run: one pass, one set of gh list calls,
       verdict-retry-once demonstrated, loop-state semantics preserved.
+      Evidence: `scripts/mock-parity.sh` (mock runner drives a full `--once`
+      pass in a throwaway clone; log shows one `issues` + one `pulls` set,
+      exactly one retry on `triage-tickets`, `implement` verdict delivered via
+      `iteration submit-verdict`, `loop-decision` writing decision-mode state,
+      exit 0).
