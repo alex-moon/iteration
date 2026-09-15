@@ -1,12 +1,9 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { LOG_FILE, log } from './log';
 import type { Validator } from './verdicts';
 import { extractJsonVerdict } from './verdicts';
 import { takeSubmittedVerdict } from './submit-state';
-
-const execFileAsync = promisify(execFile);
 
 /**
  * The agent binary is injectable so mock runs never spawn a real agent:
@@ -92,12 +89,7 @@ export async function runAgentRaw(title: string, prompt: string): Promise<string
   const cmd = agentCommand();
   let out = '';
   try {
-    const res = await execFileAsync(cmd[0]!, cmd.slice(1).concat([prompt]), {
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, ITERATION_PHASE: title },
-    });
-    out = res.stdout;
+    out = await execPrompt(cmd, title, prompt);
   } catch (err) {
     log(`${cmd[0]} phase ${title} exited non-zero`);
     out = String((err as { stdout?: unknown }).stdout ?? '');
@@ -106,4 +98,28 @@ export async function runAgentRaw(title: string, prompt: string): Promise<string
   }
   fs.appendFileSync(LOG_FILE, `----- phase ${title} -----\n${out}\n----- end ${title} -----\n`);
   return out;
+}
+
+/**
+ * Prompts go over stdin, not argv: argv hits the kernel's exec argument limit
+ * (`ENAMETOOLONG`) on long prompts like a full-issue triage. `opencode run`
+ * reads a piped, non-TTY stdin as the message.
+ */
+function execPrompt(cmd: string[], title: string, prompt: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd[0]!, cmd.slice(1), {
+      env: { ...process.env, ITERATION_PHASE: title },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (c) => (stdout += c.toString('utf8')));
+    child.stderr.on('data', (c) => (stderr += c.toString('utf8')));
+    child.on('error', reject);
+    child.on('close', (code) =>
+      code === 0 ? resolve(stdout) : reject(Object.assign(new Error(`exit ${code}`), { stdout, stderr })),
+    );
+    child.stdin.on('error', () => {});
+    child.stdin.end(prompt);
+  });
 }

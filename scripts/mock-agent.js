@@ -13,6 +13,17 @@ function loadState() {
     return { counts: {} };
   }
 }
+
+function readStdinSync() {
+  try {
+    return fs.readFileSync(0, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+const PROMPT = readStdinSync();
+
 function saveState(s) {
   fs.mkdirSync(require('path').dirname(stateFile), { recursive: true });
   fs.writeFileSync(stateFile, JSON.stringify(s));
@@ -20,10 +31,10 @@ function saveState(s) {
 
 const state = loadState();
 state.counts[phase] = (state.counts[phase] || 0) + 1;
-const n = state.counts[phase];
+const n = state.counts[phase]; // deliberate first-try failure for the triage retry path
 saveState(state);
 state.prompts = state.prompts || [];
-state.prompts.push({ phase, at: new Date().toISOString(), prompt: String(process.argv[2] || '') });
+state.prompts.push({ phase, at: new Date().toISOString(), prompt: PROMPT });
 saveState(state);
 
 function out(text) {
@@ -56,7 +67,7 @@ function submitVerdict(phase, verdict) {
 }
 
 (async () => {
-  const prompt = String(process.argv[2] || '');
+  const prompt = PROMPT;
   if (phase === 'triage-tickets' && n === 1) {
     out('I think issue 2 is a good starting point, going with that.');
   }
@@ -64,6 +75,7 @@ function submitVerdict(phase, verdict) {
     // Pick the first injected issue in the frozen snapshot, like a real agent.
     const pick = /- #(\d+) "/.exec(prompt);
     if (pick) out(`{"kind":"issue","issue":${pick[1]}}`);
+    out('{"kind":"none"}');
   }
   if (phase === 'plan-review') {
     await (async () => {
