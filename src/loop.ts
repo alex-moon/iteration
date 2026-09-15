@@ -11,6 +11,8 @@ import { stateCommandsBlock } from './wiring';
 import { gatherSnapshot, setGatheredSnapshot, snapshotText } from './snapshot';
 import { repoInfo, runPass, setRepo, type PassOutcome } from './pass';
 import { warmTicketCache } from './orchestrator';
+import { CancelledError, checkpointEx } from './control';
+import { setStatus } from './status';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -55,6 +57,7 @@ Final line MUST be the single JSON object: ${LOOP_DECISION_SCHEMA}`,
 export async function checkShutdown(countStrike = true): Promise<0 | 2 | 1> {
   const state = loadLoopState();
   if (state === null || state.mode !== 'decision' || state.decidedAt === null) return 0;
+  setStatus({ phase: 'loop-check', mode: 'checking', repo: repoInfo().fullName });
   const priority = getPriority();
   const priorityNote =
     priority !== undefined
@@ -147,6 +150,7 @@ export async function runIteration(repo: Repo): Promise<void> {
     }
     if (stale) {
       if (isOnce()) return;
+      setStatus({ phase: 'limited-check-idle', mode: 'stale', strikes: `${state?.strikes ?? 0}/${STRIKE_LIMIT}`, repo: repo.fullName });
       log(`Shutdown in effect; next limited check in ${PASS_INTERVAL}s`);
       sleepSeconds(PASS_INTERVAL);
       continue;
@@ -154,8 +158,14 @@ export async function runIteration(repo: Repo): Promise<void> {
 
     let outcome: PassOutcome;
     try {
+      checkpointEx();
       outcome = await runPass();
     } catch (err) {
+      if (err instanceof CancelledError) {
+        log('Cancel requested between phases; stopping cleanly');
+        await checkoutBranch('main');
+        return;
+      }
       log(`Pass failed hard: ${(err as Error).message}`);
       process.exitCode = 1;
       await checkoutBranch("main");
@@ -185,12 +195,14 @@ export async function runIteration(repo: Repo): Promise<void> {
       }
     }
     if (stale && loadLoopState()?.mode === 'decision') {
+      setStatus({ phase: 'decision-idle', mode: 'stale', repo: repo.fullName });
       if (isOnce()) return;
       log(`Shutdown in effect; next limited check in ${PASS_INTERVAL}s`);
       sleepSeconds(PASS_INTERVAL);
       continue;
     }
     if (isOnce()) return;
+    setStatus({ phase: 'idle-between-passes', mode: 'running', repo: repo.fullName });
     log(`Next pass in ${PASS_INTERVAL}s`);
     sleepSeconds(PASS_INTERVAL);
   }

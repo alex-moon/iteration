@@ -33,6 +33,8 @@ import {
   repoRoot,
 } from './git-client';
 import { warmTicketCache } from './orchestrator';
+import { checkpointEx, CancelledError } from './control';
+import { setStatus } from './status';
 
 let currentBranch = 'main';
 let repo: Repo;
@@ -175,11 +177,33 @@ export async function ensureBranch(issue: number): Promise<string> {
 export interface PassOutcome {
   productive: boolean;
   stop: boolean;
+  cancelled?: boolean;
+}
+
+function statusFor(phase: string, issue: number | null, pr: string | null = null): void {
+  const snapshot = passSnapshot();
+  const info = snapshot?.issues.find((i) => i.number === issue);
+  setStatus({
+    phase,
+    mode: 'running',
+    repo: repo.fullName,
+    number: issue,
+    title: info?.title ?? null,
+    branch: issue === null ? null : currentBranch,
+    pr,
+  });
+}
+
+/** Honor pause/cancel at a phase boundary, then publish what is about to run. */
+async function startPhase(phase: string, issue: number | null, pr: string | null = null): Promise<void> {
+  checkpointEx();
+  statusFor(phase, issue, pr);
 }
 
 export async function runPass(): Promise<PassOutcome> {
   const warmedIssues = await warmTicketCache(repo);
   setGatheredSnapshot(await gatherSnapshot(repo, warmedIssues));
+  statusFor('triage-tickets', null);
 
   // ---- Phase 0: triage ----
   const pick = await triagePhase();
@@ -196,15 +220,18 @@ export async function runPass(): Promise<PassOutcome> {
   }
   const ISSUE = pick.issue;
   log(`Triage verdict: ISSUE:${ISSUE}`);
+  statusFor(`triage-tickets (picked #${ISSUE})`, ISSUE);
 
   // ---- Branch ----
   currentBranch = await ensureBranch(ISSUE);
   refreshPlanDoc(ISSUE);
   log(`Working branch: ${currentBranch}`);
+  statusFor('branch-setup', ISSUE);
 
   // ---- Phase 1: plan-write ----
   const plan = planDocFor(ISSUE);
   if (plan === null) {
+    await startPhase('plan-write', ISSUE);
     await agent<unknown>(
       'plan-write',
       `${await contextPrefix(ISSUE, "plan-write")}
@@ -230,6 +257,7 @@ Final line MUST be the single JSON object: {}`,
   if (planAfterWrite === null) {
     log('No plan file; skipping hardening');
   } else {
+    await startPhase('plan-review', ISSUE);
     await agent<unknown>(
       'plan-review',
       `${await contextPrefix(ISSUE, "plan-review")}
@@ -254,6 +282,7 @@ Final line MUST be the single JSON object: {}`,
   if (await hasChanges()) {
     log('Dirty worktree; skipping implement phase');
   } else {
+    await startPhase('implement', ISSUE);
     await agent<unknown>(
       'implement',
       `${await contextPrefix(ISSUE, "implement")}
@@ -274,6 +303,7 @@ Final line MUST be the single JSON object: {}`,
   commitAndPush(`feat: implement a deliverable for #${ISSUE}`);
 
   // ---- Phase 4: critic ----
+  await startPhase('critic', ISSUE);
   await agent<unknown>(
     'critic',
     `${await contextPrefix(ISSUE, "critic")}
@@ -297,6 +327,7 @@ Final line MUST be the single JSON object: {}`,
   if (prNum !== null) {
     const pendingForPr = await fetchPendingReviewComments(repo, [prNum]);
     const snapshot = passSnapshot();
+    await startPhase('pr-review-rectify', ISSUE, `#${prNum}`);
     await agent<unknown>(
       'pr-review-rectify',
       `${await contextPrefix(ISSUE, "pr-review-rectify")}
@@ -317,6 +348,8 @@ Final line MUST be the single JSON object: {}`,
 
   // ---- PR decision ----
   await prDecisionPhase(ISSUE);
+  const finalPr = await openPrForBranch(repo, currentBranch);
+  statusFor('pr-decision (done)', ISSUE, finalPr === null ? null : `#${finalPr}`);
 
   // ---- Consolidated push-back: one comment per issue, once per pass ----
   await flushComments(repo);
@@ -328,6 +361,7 @@ Final line MUST be the single JSON object: {}`,
 
 async function prDecisionPhase(issue: number): Promise<void> {
   const planFile = planDocFor(issue)?.file;
+  await startPhase('pr-decision', issue);
   await agent<LoopDecisionVerdict>(
     'pr-decision',
     `${await contextPrefix(issue, "pr-decision")}
