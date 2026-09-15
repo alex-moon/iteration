@@ -4,6 +4,7 @@ import { logDir, logFile, log } from './log';
 import type { Validator } from './verdicts';
 import { extractJsonVerdict } from './verdicts';
 import { takeSubmittedVerdict } from './submit-state';
+import { recordVerdictOutcome } from './verdict-stats';
 
 /**
  * The agent binary is injectable so mock runs never spawn a real agent:
@@ -18,56 +19,55 @@ export function agentCommand(): string[] {
 /**
  * Runs the agent phase (async, so the orchestrator's HTTP server stays live
  * and mid-phase client calls succeed), tees the transcript to the pass log,
- * then validates the final JSON verdict. A verdict already submitted over
- * `iteration submit-verdict` takes precedence. On invalid output the agent is
- * retried exactly once with the schema included; a second failure throws
- * (a logged hard failure — never silently skipped).
+ * then takes the verdict. There are exactly two delivery channels, and the
+ * outcome is instrumented per phase: an `iteration submit-verdict` submission
+ * wins; otherwise the printed output is scanned for a line that parses as a
+ * JSON object. On failure the agent is re-run (up to VERDICT_ATTEMPT_LIMIT)
+ * with the failure reason and both delivery modes restated; exhausting the
+ * limit throws (a logged hard failure — never silently skipped).
  */
+export const VERDICT_ATTEMPT_LIMIT = 12;
+
 export async function agent<T>(title: string, prompt: string, validate: Validator, retrySchema: string): Promise<T> {
   log(`phase: ${title}`);
-  const submitted = takeSubmittedVerdict(title);
-  if (submitted !== null) {
-    const submittedErr = validate(submitted);
-    if (submittedErr === null) {
-      log(`phase ${title}: using verdict submitted via the orchestrator`);
-      return submitted as T;
+  let attempt = 0;
+  let lastReason = 'no attempt made yet';
+  while (attempt < VERDICT_ATTEMPT_LIMIT) {
+    attempt += 1;
+    const retry = attempt === 1 ? '' : retryNote(title, lastReason, retrySchema);
+    const output = await runAgentRaw(title, `${prompt}${retry}`);
+    const submitted = takeSubmittedVerdict(title);
+    if (submitted !== null) {
+      const submissionErr = validate(submitted);
+      if (submissionErr === null) {
+        recordVerdictOutcome(title, 'submit-verdict', attempt);
+        log(`phase ${title}: verdict accepted via submit-verdict (attempt ${attempt})`);
+        return submitted as T;
+      }
+      log(`phase ${title}: submitted verdict rejected (${submissionErr})`);
     }
-    log(`phase ${title}: submitted verdict rejected (${submittedErr}); parsing phase output`);
-  }
-
-  let output = await runAgentRaw(title, prompt);
-  // A verdict submitted over `iteration submit-verdict` during the phase call wins.
-  const midSubmission = takeSubmittedVerdict(title);
-  if (midSubmission !== null) log(`phase ${title}: verdict submitted via the orchestrator`);
-  const first =
-    midSubmission !== null ? finalize(midSubmission, validate) : check(output, validate);
-  if (first.ok) return first.value as T;
-  log(`phase ${title}: ${first.reason}; one retry with schema`);
-  output = await runAgentRaw(
-    title,
-    `${prompt}\n\nYour previous reply failed: ${first.reason}\nFinal line MUST be a single JSON object matching: ${retrySchema}`,
-  );
-  const second = check(output, validate);
-  if (second.ok) return second.value as T;
-  const midRetrySubmission = takeSubmittedVerdict(title);
-  if (midRetrySubmission !== null) {
-    const finalVerdict = finalize(midRetrySubmission, validate);
-    if (finalVerdict.ok) {
-      log(`phase ${title}: retry verdict submitted via the orchestrator`);
-      return finalVerdict.value as T;
+    const fromOutput = check(output, validate);
+    if (fromOutput.ok) {
+      recordVerdictOutcome(title, 'final-line', attempt);
+      log(`phase ${title}: verdict accepted via final-line output (attempt ${attempt})`);
+      return fromOutput.value as T;
     }
-    throw new Error(`phase ${title}: retry also invalid (${finalVerdict.reason})`);
+    const reasons = [
+      ...(submitted !== null ? ['a submitted verdict was rejected'] : []),
+      fromOutput.reason,
+    ];
+    lastReason = reasons.join('; ');
+    log(`phase ${title}: ${lastReason} (attempt ${attempt}/${VERDICT_ATTEMPT_LIMIT})`);
   }
-  throw new Error(`phase ${title}: retry also invalid (${second.reason})`);
+  throw new Error(`phase ${title}: no valid verdict after ${VERDICT_ATTEMPT_LIMIT} attempts (last: ${lastReason})`);
 }
 
-function finalize(
-  value: unknown,
-  validate: Validator,
-): { ok: boolean; value?: unknown; reason: string } {
-  const err = validate(value);
-  if (err !== null) return { ok: false, reason: `invalid verdict (${err})` };
-  return { ok: true, value, reason: '' };
+function retryNote(title: string, reason: string, retrySchema: string): string {
+  return `
+Your previous reply was rejected: ${reason}
+Deliver your verdict by running 'iteration submit-verdict ${title} <json>' (preferred,
+mid-phase), with the output printed as a single-line JSON object as fallback.
+The fallback final line MUST be a single JSON object matching: ${retrySchema}`;
 }
 
 function check(
