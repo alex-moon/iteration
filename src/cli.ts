@@ -69,10 +69,16 @@ function main(): void {
     );
   }
 
+  if (command === 'tui') {
+    require('./tui').runTui();
+    return;
+  }
+
   if (command !== '' && command !== 'start' && command !== '--once' && !/^\d+$/.test(command)) {
     fail(
       `Unknown command: ${command}. Run 'iteration' (or 'iteration start') to start the orchestrator,` +
-        ' or set ITERATION_PORT in an agent phase to use client commands.',
+      ' run `iteration tui` for the control center,' +
+      ' or set ITERATION_PORT in an agent phase to use client commands.',
     );
   }
 
