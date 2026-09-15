@@ -8,11 +8,11 @@ import { takeSubmittedVerdict } from './submit-state';
 /**
  * The agent binary is injectable so mock runs never spawn a real agent:
  * ITERATION_AGENT_CMD holds the full command line ("node mock-agent.js ..."),
- * defaulting to opencode when unset.
+ * defaulting to `opencode run`.
  */
 export function agentCommand(): string[] {
   const spec = process.env.ITERATION_AGENT_CMD;
-  return spec === undefined || spec.trim() === '' ? ['opencode'] : spec.split(' ').filter(Boolean);
+  return spec === undefined || spec.trim() === '' ? ['opencode', 'run'] : spec.split(' ').filter(Boolean);
 }
 
 /**
