@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import { LOG_FILE, log } from './log';
+import { logDir, logFile, log } from './log';
 import type { Validator } from './verdicts';
 import { extractJsonVerdict } from './verdicts';
 import { takeSubmittedVerdict } from './submit-state';
@@ -96,7 +96,8 @@ export async function runAgentRaw(title: string, prompt: string): Promise<string
     const stderr = String((err as { stderr?: unknown }).stderr ?? '').trim();
     if (stderr !== '') log(`${cmd[0]} phase ${title} stderr: ${stderr}`);
   }
-  fs.appendFileSync(LOG_FILE, `----- phase ${title} -----\n${out}\n----- end ${title} -----\n`);
+  fs.mkdirSync(logDir(), { recursive: true });
+  fs.appendFileSync(logFile(), `----- phase ${title} -----\n${out}\n----- end ${title} -----\n`);
   return out;
 }
 

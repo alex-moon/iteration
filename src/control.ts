@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { sleepSeconds } from './shell';
-import { ITERATION_DIR } from './snapshot';
+import { stateDir } from './state-dir';
 
 interface Control {
   paused?: boolean;
@@ -9,7 +9,7 @@ interface Control {
 }
 
 export function controlFile(): string {
-  return path.join(ITERATION_DIR, 'control.json');
+  return path.join(stateDir(), 'control.json');
 }
 
 function readControl(): Control {

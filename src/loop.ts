@@ -24,7 +24,7 @@ export async function decideLoop(): Promise<boolean> {
   const v = await agent<LoopDecisionVerdict>(
     'loop-decision',
     `You have just completed an iteration pass on the GitHub open
-issues of the repo. Recent activity is visible in .iteration/logs/iteration-*.log, plan docs
+issues of the repo. Recent activity is visible in .git/iteration/logs/iteration-*.log, plan docs
 in .iteration/docs/,
 open PRs and issue comments in GitHub. Decide whether the iteration loop should CONTINUE or END.
 

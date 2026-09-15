@@ -38,7 +38,8 @@ agents inside phases call `iteration get-ticket <n>` etc. with `ITERATION_PORT` 
 - TypeScript in `src/`, one concern per module; no comments unless asked for a reason.
 - Repo detection is from `git remote get-url origin`; nothing is hardcoded per-repo.
 - Branch naming `feat/<issue>-<slug>`; plan docs `.iteration/docs/plan-<issue>-<summary>.md`;
-  logs `.iteration/logs/`.
+  logs and harness state in `.git/iteration/` (kept out of the worktree so it can never
+  produce dirty files that block branch checkouts).
 - Agent-facing prompts must prefer orchestrator commands (`get-ticket`,
   `list-issues`, `submit-verdict`) over the agents re-running `gh` list calls;
   one set of list calls per pass is the harness's job.

@@ -14,8 +14,7 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-export const ITERATION_DIR = '.iteration';
-export const PLAN_DOCS_DIR = path.join(ITERATION_DIR, 'docs');
+export const PLAN_DOCS_DIR = '.iteration/docs';
 
 export function readPlanDocs(issues: IssueInfo[]): PlanDoc[] {
   if (!fs.existsSync(PLAN_DOCS_DIR)) return [];

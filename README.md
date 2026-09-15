@@ -13,7 +13,7 @@ and agent phases call back via client commands with `ITERATION_PORT` set:
 
 Context is injected into each phase prompt from a frozen per-pass snapshot
 (triage sees every ticket, dedicated phases only theirs), so agents should not
-need `gh`. Plans live in `.iteration/docs/`, logs in `.iteration/logs/`.
+need `gh`. Plans live in `.iteration/docs/`; logs and harness state live in `.git/iteration/`.
 
 Install: `npm install -g @alex-moon/iteration` (or `npm link`) — the public
 scope is `@alex-moon/iteration`; the binary remains `iteration`.

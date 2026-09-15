@@ -1,8 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import {
-  ITERATION_DIR,
-} from './snapshot';
+import { stateDir } from './state-dir';
 
 export interface StatusTicket {
   number: number | null;
@@ -23,7 +21,7 @@ export interface Status {
 let lastStatus: Status | null = null;
 
 export function statusFile(): string {
-  return path.join(ITERATION_DIR, 'status.json');
+  return path.join(stateDir(), 'status.json');
 }
 
 export function readStatus(): Status | null {
@@ -77,7 +75,6 @@ export function setStatus(partial: {
   branch?: string | null;
   pr?: string | null;
 }): void {
-  fs.mkdirSync(ITERATION_DIR, { recursive: true });
   lastStatus = {
     updatedAt: nowIso(),
     phase: partial.phase,

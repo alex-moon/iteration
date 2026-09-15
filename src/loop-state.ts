@@ -3,14 +3,14 @@ import path from 'node:path';
 import type { LoopState } from './types';
 import { log } from './log';
 import { STRIKE_LIMIT } from './config';
+import { stateDir } from './state-dir';
 
-const STATE_DIR = '.iteration';
-const STATE_FILE = path.join(STATE_DIR, 'loop-state.json');
+const STATE_FILE = path.join(stateDir(), 'loop-state.json');
 
-export function loadLoopState(dir: string = STATE_DIR): LoopState | null {
+export function loadLoopState(): LoopState | null {
   try {
     const raw = JSON.parse(
-      fs.readFileSync(path.join(dir, 'loop-state.json'), 'utf8'),
+      fs.readFileSync(STATE_FILE, 'utf8'),
     ) as Partial<LoopState>;
     const mode = raw.mode === 'decision' || raw.mode === 'strikes' ? raw.mode : null;
     if (mode === null) return null;
@@ -31,11 +31,7 @@ export function writeLoopState(
   decidedAt: string | null,
   reason: string | null,
 ): void {
-  fs.mkdirSync(STATE_DIR, { recursive: true });
-  fs.writeFileSync(
-    STATE_FILE,
-    `${JSON.stringify({ strikes, decidedAt, reason, mode }, null, 2)}\n`,
-  );
+  fs.writeFileSync(STATE_FILE, `${JSON.stringify({ strikes, decidedAt, reason, mode }, null, 2)}\n`);
 }
 
 function nowIso(): string {

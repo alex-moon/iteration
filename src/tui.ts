@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { readStatus, statusAgeSeconds } from './status';
 import { controlFile } from './control';
-import { LOG_DIR } from './log';
+import { logDir } from './log';
 
 const REFRESH_MS = 1000;
 const LOG_LINES = 15;
@@ -18,17 +18,18 @@ const RESET = '\x1b[0m';
 
 function latestLogFile(): string | null {
   let newest: { name: string; mtime: number } | null = null;
+  const dir = logDir();
   try {
-    for (const f of fs.readdirSync(LOG_DIR)) {
+    for (const f of fs.readdirSync(dir)) {
       if (!f.startsWith('iteration-') || !f.endsWith('.log')) continue;
-      const full = path.join(LOG_DIR, f);
+      const full = path.join(dir, f);
       const mtime = fs.statSync(full).mtimeMs;
       if (newest === null || mtime > newest.mtime) newest = { name: f, mtime };
     }
   } catch {
     return null;
   }
-  return newest === null ? null : path.join(LOG_DIR, newest.name);
+  return newest === null ? null : path.join(dir, newest.name);
 }
 
 function tailLines(file: string | null): string[] {
@@ -61,7 +62,7 @@ export function frameText(
   };
   emit('iteration control center', BOLD + CYAN);
   if (status === null) {
-    emit('orchestrator not running (no .iteration/status.json yet)', RED);
+    emit('orchestrator not running (no status.json in .git/iteration/ yet)', RED);
   } else {
     const t = status.ticket;
     const ticket = t.number === null ? '(none)' : `#${t.number} "${(t.title ?? '').replace(/\n/g, ' ')}"`;
