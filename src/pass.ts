@@ -19,7 +19,7 @@ import {
 } from './snapshot';
 import { flushComments } from './comments';
 import { fetchIssueTitle, fetchPendingReviewComments } from './github';
-import { openPrForBranch } from './octokit';
+import { createDraftPr, openPrForBranch } from './octokit';
 import { stateCommandsBlock } from './wiring';
 import {
   addAllAndCommit,
@@ -27,6 +27,7 @@ import {
   checkoutBranch,
   hasChanges,
   hasPathChanges,
+  hasCommitsSinceFork,
   listBranches,
   currentBranch as currentBranchName,
   pullBranch,
@@ -73,6 +74,13 @@ async function commitPlan(issue: number): Promise<void> {
   await pushBranch(currentBranch);
   log('Committed and pushed plan updates');
   refreshPlanDoc(issue);
+}
+
+async function ensureDraftPr(issue: number): Promise<void> {
+  const existing = await openPrForBranch(repo, currentBranch);
+  if (existing !== null) return;
+  const title = await fetchIssueTitle(repo, issue);
+  await createDraftPr(repo, currentBranch, issue, title, planDocFor(issue)?.file ?? null);
 }
 
 // ---- Shared prompt frame ---------------------------------------------------------------
@@ -311,6 +319,7 @@ Final line MUST be the single JSON object: {}`,
     );
   }
   commitAndPush(`feat: implement a deliverable for #${ISSUE}`);
+  if (await hasCommitsSinceFork(currentBranch)) await ensureDraftPr(ISSUE);
 
   // ---- Phase 4: critic ----
   await startPhase('critic', ISSUE);
@@ -331,6 +340,7 @@ Final line MUST be the single JSON object: {}`,
     '{}',
   );
   commitAndPush(`test/hardening: critic pass for #${ISSUE}`);
+  if (await hasCommitsSinceFork(currentBranch)) await ensureDraftPr(ISSUE);
 
   // ---- Phase 4.5: address PR review comments ----
   const prNum = await openPrForBranch(repo, currentBranch);
@@ -379,10 +389,11 @@ ${planFile ? `The plan is at ${planFile}.` : ''}
 
 Decide whether this ticket is meaningfully done: a real deliverable exists, verification
 passes, and remaining gaps are honest follow-ups documented in the plan. If yes: run
-npm run ci; if it passes, open a PR targeting main (gh pr create --repo ${repo.fullName}
---base main --head ${currentBranch}) with a short summary linking the plan file, and close
-out. If not meaningfully done, do nothing except queue any missing open questions via
-'iteration queue-comment ${issue} "<question>"'.
+npm run ci; if it passes, ensure the PR targeting main is not a draft - if it is, run
+gh pr ready <number> --repo ${repo.fullName} (open one with gh pr create --repo ${repo.fullName}
+--base main --head ${currentBranch} only if none exists) with a short summary linking the
+plan file, and close out. If not meaningfully done, do nothing except queue any missing open
+questions via 'iteration queue-comment ${issue} "<question>"'.
 Final line MUST be the single JSON object: ${LOOP_DECISION_SCHEMA}`,
     validateLoopDecision,
     LOOP_DECISION_SCHEMA,

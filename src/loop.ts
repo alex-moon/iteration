@@ -1,6 +1,5 @@
 import type { LoopDecisionVerdict, Repo } from './types';
 import { LOOP_DECISION_SCHEMA } from './types';
-import { sleepSeconds } from './shell';
 import { checkoutBranch } from './git-client';
 import { log, fail } from './log';
 import { PASS_INTERVAL, getPriority, initCli, isOnce } from './config';
@@ -121,8 +120,5 @@ export async function runIteration(repo: Repo): Promise<void> {
       }
     }
     if (isOnce()) return;
-    setStatus({ phase: 'idle-between-passes', mode: 'running', repo: repo.fullName });
-    log(`Next pass in ${PASS_INTERVAL}s`);
-    sleepSeconds(PASS_INTERVAL);
   }
 }

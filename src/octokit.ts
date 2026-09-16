@@ -35,6 +35,30 @@ function readGhToken(): string | undefined {
   }
 }
 
+export async function createDraftPr(
+  repo: Repo,
+  branch: string,
+  issue: number,
+  issueTitle: string,
+  planFile: string | null,
+): Promise<number> {
+  const body = [
+    `Work in progress for #${issue}.`,
+    planFile ? `Plan: ${planFile}` : '',
+  ].filter(Boolean).join('\n');
+  const res = await client().rest.pulls.create({
+    owner: repo.owner,
+    repo: repo.name,
+    base: 'main',
+    head: branch,
+    draft: true,
+    title: `WIP: ${issueTitle} (#${issue})`,
+    body,
+  });
+  log(`Created draft PR #${res.data.number} for ${branch}`);
+  return res.data.number;
+}
+
 export async function openPrForBranch(repo: Repo, branch: string): Promise<number | null> {
   const res = await client().rest.pulls.list({ owner: repo.owner, repo: repo.name, head: `${repo.fullName}:${branch}`, state: 'open' });
   return res.data[0]?.number ?? null;

@@ -60,6 +60,11 @@ export async function currentBranch(): Promise<string> {
   return (await gitClient().raw(['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
 }
 
+export async function hasCommitsSinceFork(branch: string): Promise<boolean> {
+  const count = await gitClient().raw(['rev-list', '--count', `origin/main..${branch}`]);
+  return parseInt(count.trim(), 10) > 0;
+}
+
 /** Detects the GitHub repo from the origin remote (ssh or https URL); fails clearly if absent. */
 export async function detectRepoFromOrigin(): Promise<Repo> {
   let url = '';
