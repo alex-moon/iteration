@@ -168,6 +168,15 @@ export async function ensureBranch(issue: number): Promise<string> {
     .join('-');
   const summary = words === '' ? 'iteration' : words;
   const branch = `feat/${issue}-${summary}`;
+  const local = branches.find((b) => !b.startsWith('origin/') && b === branch);
+  if (local) {
+    await checkoutBranch(branch);
+    const pulledOk = await pullBranch(branch);
+    if (!pulledOk && (await currentBranchName()) !== branch) {
+      log('pull failed; continuing with local state');
+    }
+    return branch;
+  }
   await checkoutBranch(branch, 'origin/main');
   log(`Created branch ${branch}`);
   return branch;
