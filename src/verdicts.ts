@@ -1,4 +1,4 @@
-import { CHECK_SCHEMA, LOOP_DECISION_SCHEMA, TRIAGE_SCHEMA } from './types';
+import { LOOP_DECISION_SCHEMA, TRIAGE_SCHEMA } from './types';
 
 export type Validator = (v: unknown) => string | null;
 
@@ -38,14 +38,6 @@ export function validateLoopDecision(v: unknown): string | null {
   if (r.decision === 'CONTINUE') return null;
   if (r.decision === 'END' && asStr(r.reason) !== null) return null;
   return `expected ${LOOP_DECISION_SCHEMA}`;
-}
-
-export function validateCheck(v: unknown): string | null {
-  const r = asRecord(v);
-  if (!r) return 'not a JSON object';
-  if (r.verdict === 'NONE') return null;
-  if (r.verdict === 'NEW' && asStr(r.info) !== null) return null;
-  return `expected ${CHECK_SCHEMA}`;
 }
 
 export function acceptAnyObject(v: unknown): string | null {

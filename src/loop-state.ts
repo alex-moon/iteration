@@ -18,6 +18,7 @@ export function loadLoopState(): LoopState | null {
       strikes: typeof raw.strikes === 'number' ? raw.strikes : 0,
       decidedAt: typeof raw.decidedAt === 'string' ? raw.decidedAt : null,
       reason: typeof raw.reason === 'string' ? raw.reason : null,
+      activity: typeof raw.activity === 'string' ? raw.activity : null,
       mode,
     };
   } catch {
@@ -30,8 +31,12 @@ export function writeLoopState(
   mode: LoopState['mode'],
   decidedAt: string | null,
   reason: string | null,
+  activity: string | null = null,
 ): void {
-  fs.writeFileSync(STATE_FILE, `${JSON.stringify({ strikes, decidedAt, reason, mode }, null, 2)}\n`);
+  fs.writeFileSync(
+    STATE_FILE,
+    `${JSON.stringify({ strikes, decidedAt, reason, activity, mode }, null, 2)}\n`,
+  );
 }
 
 function nowIso(): string {

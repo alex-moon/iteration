@@ -213,7 +213,7 @@ export async function runPass(): Promise<PassOutcome> {
     await flushComments(repo);
     if (!addStrike('strikes', 'triage returned ISSUE:NONE')) {
       log(
-        `All work blocked for ${STRIKE_LIMIT} consecutive strikes; downing tools pending final grace check`,
+        `Triage found nothing to do for ${STRIKE_LIMIT} consecutive passes; entering dormant sleep mode`,
       );
       return { productive: false, stop: true };
     }

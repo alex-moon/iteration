@@ -5,6 +5,7 @@ export interface LoopState {
   decidedAt: string | null;
   reason: string | null;
   mode: 'decision' | 'strikes';
+  activity: string | null;
 }
 
 export interface Repo {
@@ -55,12 +56,11 @@ export interface PassSnapshot {
 
 export type TriageVerdict = { kind: 'issue'; issue: number } | { kind: 'none' };
 export type LoopDecisionVerdict = { decision: 'CONTINUE' | 'END'; reason?: string };
-export type CheckVerdict = { verdict: 'NEW' | 'NONE'; info?: string };
+
 
 export const TRIAGE_SCHEMA = '{"kind":"issue","issue":<number>} or {"kind":"none"}';
 export const LOOP_DECISION_SCHEMA =
   '{"decision":"CONTINUE"} or {"decision":"END","reason":"<short reason>"}';
-export const CHECK_SCHEMA = '{"verdict":"NEW","info":"<one short reason>"} or {"verdict":"NONE"}';
 
 export interface TicketPayload {
   number: number;
