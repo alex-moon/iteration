@@ -143,4 +143,5 @@ vite.config.ts.timestamp-*
 .vite/
 
 /.iteration
-/tmp
+/diagnostics
+
