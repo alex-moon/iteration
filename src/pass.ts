@@ -25,6 +25,7 @@ import {
   addAllAndCommit,
   addPathAndCommit,
   checkoutBranch,
+  discardLocalChanges,
   hasChanges,
   hasPathChanges,
   hasCommitsSinceFork,
@@ -241,6 +242,10 @@ export async function runPass(): Promise<PassOutcome> {
   statusFor(`triage-tickets (picked #${ISSUE})`, ISSUE);
 
   // ---- Branch ----
+  if (await hasChanges()) {
+    log('Leftover local changes in worktree; discarding before branch setup');
+    await discardLocalChanges();
+  }
   currentBranch = await ensureBranch(ISSUE);
   refreshPlanDoc(ISSUE);
   log(`Working branch: ${currentBranch}`);

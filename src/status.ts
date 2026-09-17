@@ -65,6 +65,21 @@ export function clearStatus(): void {
   }
 }
 
+/**
+ * Refresh updatedAt in place (heartbeat): a dead harness leaves a stale
+ * timestamp, so consumers can tell 'stalled/never-written' apart from 'alive'.
+ */
+export function touchStatus(): void {
+  try {
+    const s = JSON.parse(fs.readFileSync(statusFile(), 'utf8')) as { updatedAt?: string };
+    if (typeof s.updatedAt !== 'string') return;
+    s.updatedAt = nowIso();
+    fs.writeFileSync(statusFile(), `${JSON.stringify(s, null, 2)}\n`);
+  } catch {
+    // no status file yet
+  }
+}
+
 export function setStatus(partial: {
   phase: string;
   mode: string;

@@ -7,6 +7,9 @@ import { queueComment } from './comments';
 import { passSnapshot } from './snapshot';
 import { detectRepoFromOrigin } from './git-client';
 import { runIteration } from './loop';
+import { clearPid, pidAlive, readPid, writePid } from './pid';
+import { readStatus, setStatus, touchStatus } from './status';
+import { statusAgeSeconds } from './status';
 
 export type TicketCache = Map<string, unknown>;
 
@@ -124,10 +127,64 @@ export function serve(repo: Repo): Promise<http.Server> {
 
 export { cache as orchestratorCache };
 
+const HEARTBEAT_SECS = 60;
+
+function onSignal(sig: string): void {
+  log(`received ${sig}; stopping cleanly`);
+  try {
+    const s = readStatus();
+    const ticket = s?.ticket;
+    setStatus({
+      phase: `stopped (was: ${s?.phase ?? 'unknown'})`,
+      mode: 'stopped',
+      repo: s?.repo ?? null,
+      number: ticket?.number ?? null,
+      title: ticket?.title ?? null,
+      branch: ticket?.branch ?? null,
+      pr: ticket?.pr ?? null,
+    });
+  } catch {
+    // status is best-effort on the way out
+  }
+  clearPid();
+  process.exit(sig === 'SIGINT' ? 130 : 143);
+}
+
+/**
+ * Hardens the loop against the failure mode seen in the field (2026-09-17,
+ * alex-moon/tova): the harness process was killed a second after starting the
+ * implement phase, so status.json kept claiming 'running', the phase
+ * transcript was lost, and the detached phase agent talked to a dead port.
+ * - SIGHUP is ignored: a closing parent terminal/session terminates a
+ *   non-detached child silently, which is exactly that death.
+ * - SIGINT/SIGTERM write an honest 'stopped' status and release the pid.
+ * - A heartbeat keeps status.json updatedAt fresh so 'dead harness' is
+ *   observable; a stale 'running' status with a dead pid is reported loudly.
+ * - pid.json lets a new run detect a live sibling instance.
+ */
 export async function runOrchestrator(): Promise<void> {
   let server: http.Server | null = null;
   try {
     const repo = await detectRepoFromOrigin();
+    const previousPid = readPid();
+    const siblingLive = previousPid !== null && pidAlive(previousPid);
+    if (siblingLive) {
+      log(`warning: pid.json points at a live process (${previousPid}); another harness may already be running on ${repo.fullName}`);
+    }
+    const staleStatus = readStatus();
+    if (staleStatus !== null && staleStatus.mode === 'running' && !siblingLive) {
+      log(
+        `previous run died mid-phase without a clean stop: status.json says '${staleStatus.phase}' (mode running, updated ${staleStatus.updatedAt}, age ${statusAgeSeconds(staleStatus)}s) but pid is gone; not recovering automatically - review the last log in .git/iteration/logs/ and restart`,
+      );
+    }
+    writePid();
+    process.on('SIGHUP', () => {
+      log('ignoring SIGHUP (parent session closed); continuing');
+    });
+    process.on('SIGINT', () => onSignal('SIGINT'));
+    process.on('SIGTERM', () => onSignal('SIGTERM'));
+    const heartbeat = setInterval(() => touchStatus(), HEARTBEAT_SECS * 1000);
+    heartbeat.unref();
     server = await serve(repo);
     const addr = server.address();
     const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
@@ -136,6 +193,22 @@ export async function runOrchestrator(): Promise<void> {
     process.env.ITERATION_PORT = String(port);
     await runIteration(repo);
   } finally {
+    clearPid();
+    // A run that exits by returning (end of pass, cancelled, failed) must not
+    // leave status claiming 'running'; only a sudden death should.
+    const finalStatus = readStatus();
+    if (finalStatus !== null && finalStatus.mode === 'running') {
+      const ticket = finalStatus.ticket;
+      setStatus({
+        phase: `stopped (was: ${finalStatus.phase})`,
+        mode: 'stopped',
+        repo: finalStatus.repo,
+        number: ticket.number,
+        title: ticket.title,
+        branch: ticket.branch,
+        pr: ticket.pr,
+      });
+    }
     server?.close();
   }
 }

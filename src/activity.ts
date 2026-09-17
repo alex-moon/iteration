@@ -2,7 +2,6 @@ import type { LoopState, Repo } from './types';
 import { client } from './octokit';
 import { log } from './log';
 import { loadLoopState, writeLoopState, clearShutdown } from './loop-state';
-import { sleepSeconds } from './shell';
 import { PASS_INTERVAL } from './config';
 import { setStatus } from './status';
 
@@ -76,11 +75,13 @@ export function activityChange(current: string, baseline: string): string | null
 /**
  * Sleep mode for a shutdown in effect: poll GitHub for meaningful new
  * activity each PASS_INTERVAL; the first poll records the baseline. Returns
- * only when new activity wakes the loop (shutdown cleared).
+ * only when new activity wakes the loop (shutdown cleared). Uses an
+ * event-loop-friendly delay (not Atomics.wait) so signal handlers registered
+ * on the process stay responsive while dormant.
  */
 export async function sleepUntilActivity(repo: Repo): Promise<void> {
   while (true) {
-    sleepSeconds(PASS_INTERVAL);
+    await new Promise((resolve) => setTimeout(resolve, PASS_INTERVAL * 1000));
     const current = await fetchActivity(repo);
     if (current === null) continue;
     const state: LoopState | null = loadLoopState();

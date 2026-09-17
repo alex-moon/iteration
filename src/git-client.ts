@@ -38,6 +38,18 @@ export async function pushBranch(branch: string): Promise<void> {
   await gitClient().push(['-u', 'origin', branch, '--quiet']);
 }
 
+/**
+ * Clears leftover tracked-file modifications (staged or unstaged). The
+ * harness keeps state in .git/iteration/ and commits deliverables at each
+ * phase boundary, so anything dirty at a branch boundary is debris from an
+ * interrupted pass, not work to preserve. Untracked files are left alone.
+ */
+export async function discardLocalChanges(): Promise<void> {
+  const g = gitClient();
+  await g.reset(['--mixed', '--quiet']);
+  await g.checkout(['--', '.']);
+}
+
 export async function checkoutBranch(branch: string, newFrom?: string): Promise<void> {
   if (newFrom !== undefined) await gitClient().checkout(['-b', branch, newFrom]);
   else await gitClient().checkout(branch);
@@ -53,7 +65,10 @@ export async function pullBranch(branch: string): Promise<boolean> {
 }
 
 export async function listBranches(): Promise<string[]> {
-  return (await gitClient().branch(['-a', '--format=%(refname:short)'])).all;
+  // simple-git's .branch() parser cannot handle a custom --format (returns .all = []),
+  // so read the raw output directly.
+  const out = await gitClient().raw(['branch', '-a', '--format=%(refname:short)']);
+  return out.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
 }
 
 export async function currentBranch(): Promise<string> {

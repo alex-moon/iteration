@@ -60,6 +60,8 @@ export async function createDraftPr(
 }
 
 export async function openPrForBranch(repo: Repo, branch: string): Promise<number | null> {
-  const res = await client().rest.pulls.list({ owner: repo.owner, repo: repo.name, head: `${repo.fullName}:${branch}`, state: 'open' });
-  return res.data[0]?.number ?? null;
+  const res = await client().rest.pulls.list({ owner: repo.owner, repo: repo.name, state: 'open' });
+  // GitHub's `head` filter wants `user:branch`; matching on the ref instead
+  // stays format-independent and works for fork-head PRs too.
+  return res.data.find((p) => p.head.ref === branch)?.number ?? null;
 }

@@ -1,6 +1,6 @@
 import type { LoopDecisionVerdict, Repo } from './types';
 import { LOOP_DECISION_SCHEMA } from './types';
-import { checkoutBranch } from './git-client';
+import { checkoutBranch, discardLocalChanges } from './git-client';
 import { log, fail } from './log';
 import { PASS_INTERVAL, getPriority, initCli, isOnce } from './config';
 import { validateLoopDecision } from './verdicts';
@@ -14,6 +14,17 @@ import { sleepUntilActivity } from './activity';
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/** Return to main, clearing leftover worktree dirt if that is what blocks us. */
+async function safeCheckoutMain(): Promise<void> {
+  try {
+    await checkoutBranch('main');
+  } catch (err) {
+    log(`checkout main failed (${(err as Error).message.split('\n')[0]}); clearing local changes and retrying`);
+    await discardLocalChanges();
+    await checkoutBranch('main');
+  }
 }
 
 // ---- Loop-decision agent -----------------------------------------------------------------
@@ -86,12 +97,12 @@ export async function runIteration(repo: Repo): Promise<void> {
     } catch (err) {
       if (err instanceof CancelledError) {
         log('Cancel requested between phases; stopping cleanly');
-        await checkoutBranch('main');
+        await safeCheckoutMain();
         return;
       }
       log(`Pass failed hard: ${(err as Error).message}`);
       process.exitCode = 1;
-      await checkoutBranch("main");
+      await safeCheckoutMain();
       if (loadLoopState()?.mode === 'decision') {
         writeLoopState(0, 'strikes', nowIso(), (err as Error).message);
       }
