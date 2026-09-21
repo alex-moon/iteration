@@ -1,6 +1,6 @@
 import type { LoopDecisionVerdict, Repo } from './types';
 import { LOOP_DECISION_SCHEMA } from './types';
-import { checkoutBranch, discardLocalChanges } from './git-client';
+import { safeCheckoutMain } from './git-client';
 import { log, fail } from './log';
 import { PASS_INTERVAL, getPriority, initCli, isOnce } from './config';
 import { validateLoopDecision } from './verdicts';
@@ -14,17 +14,6 @@ import { sleepUntilActivity } from './activity';
 
 function nowIso(): string {
   return new Date().toISOString();
-}
-
-/** Return to main, clearing leftover worktree dirt if that is what blocks us. */
-async function safeCheckoutMain(): Promise<void> {
-  try {
-    await checkoutBranch('main');
-  } catch (err) {
-    log(`checkout main failed (${(err as Error).message.split('\n')[0]}); clearing local changes and retrying`);
-    await discardLocalChanges();
-    await checkoutBranch('main');
-  }
 }
 
 // ---- Loop-decision agent -----------------------------------------------------------------

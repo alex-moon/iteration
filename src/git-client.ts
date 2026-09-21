@@ -1,5 +1,5 @@
 import simpleGit, { type SimpleGit } from 'simple-git';
-import { fail } from './log';
+import { fail, log } from './log';
 import type { Repo } from './types';
 
 /**
@@ -53,6 +53,29 @@ export async function discardLocalChanges(): Promise<void> {
 export async function checkoutBranch(branch: string, newFrom?: string): Promise<void> {
   if (newFrom !== undefined) await gitClient().checkout(['-b', branch, newFrom]);
   else await gitClient().checkout(branch);
+}
+
+/**
+ * Return to main, clearing leftover worktree dirt if that is what blocks us.
+ * Uses throwaway-safe discard so a dirty pass boundary never fails the whole
+ * pass or the loop.
+ */
+export async function safeCheckoutMain(): Promise<void> {
+  try {
+    await checkoutBranch('main');
+  } catch (err) {
+    const msg = (err as Error).message.split('\n')[0] ?? '';
+    const wt = /already used by worktree at '(.+?)'/.exec(msg)?.[1];
+    if (wt) {
+      log(`checkout main blocked by worktree at ${wt}; removing it and retrying`);
+      await gitClient().raw(['worktree', 'remove', '--force', wt]);
+      await checkoutBranch('main');
+      return;
+    }
+    log(`checkout main failed (${msg}); clearing local changes and retrying`);
+    await discardLocalChanges();
+    await checkoutBranch('main');
+  }
 }
 
 export async function pullBranch(branch: string): Promise<boolean> {

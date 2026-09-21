@@ -30,6 +30,7 @@ import {
   hasPathChanges,
   hasCommitsSinceFork,
   listBranches,
+  safeCheckoutMain,
   currentBranch as currentBranchName,
   pullBranch,
   pushBranch,
@@ -81,7 +82,19 @@ async function ensureDraftPr(issue: number): Promise<void> {
   const existing = await openPrForBranch(repo, currentBranch);
   if (existing !== null) return;
   const title = await fetchIssueTitle(repo, issue);
-  await createDraftPr(repo, currentBranch, issue, title, planDocFor(issue)?.file ?? null);
+  try {
+    await createDraftPr(repo, currentBranch, issue, title, planDocFor(issue)?.file ?? null);
+  } catch (err) {
+    // Seen in the field (2026-09-20, alex-moon/tova): an open PR for this branch
+    // can be merged while the pass is running; the merge deletes the remote head
+    // ref, so the creation above 422s with field=head because the ref is gone
+    // even though we pushed it minutes earlier. Re-push and retry once.
+    const msg = (err as Error).message;
+    if (!/Validation Failed.*"head".*"invalid"/.test(msg)) throw err;
+    log('draft PR creation: remote head ref missing (deleted by a PR merge?); re-pushing and retrying');
+    await pushBranch(currentBranch);
+    await createDraftPr(repo, currentBranch, issue, title, planDocFor(issue)?.file ?? null);
+  }
 }
 
 // ---- Shared prompt frame ---------------------------------------------------------------
@@ -373,6 +386,10 @@ Final line MUST be the single JSON object: {}`,
 
   // ---- PR decision ----
   await prDecisionPhase(ISSUE);
+  // The decision agent may have needed to fix CI (e.g. a typecheck cast) to
+  // verify the PR; those edits are real work, so commit them instead of
+  // leaving the worktree dirty at the pass boundary.
+  await commitAndPush(`closeout: pr-decision fixes for #${ISSUE}`);
   const finalPr = await openPrForBranch(repo, currentBranch);
   statusFor('pr-decision (done)', ISSUE, finalPr === null ? null : `#${finalPr}`);
 
@@ -380,7 +397,7 @@ Final line MUST be the single JSON object: {}`,
   await flushComments(repo);
 
   log(`Pass complete for issue #${ISSUE} (${currentBranch})`);
-  await checkoutBranch('main');
+  await safeCheckoutMain();
   return { productive: true, stop: false };
 }
 
