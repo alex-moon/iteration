@@ -2,16 +2,17 @@
 
 Guidance for any agent (opencode, Claude, human via CLI) working in this repo.
 
-## CRITICAL: Never call `opencode` from this repo
+## CRITICAL: Never spawn a real agent from this repo
 
-This repo IS an iteration orchestrator that spawns agent phases via `opencode run`.
-Running this repo's code (or testing it naively) will spawn a NEW opencode agent,
-which will then try to work on this repo and spawn another agent, recursively.
+This repo IS an iteration orchestrator that spawns agent phases via a coding
+CLI (opencode, Claude Code, Codex CLI, or GitHub Copilot CLI — see `src/agents.ts`).
+Running this repo's code (or testing it naively) will spawn a NEW agent, which
+will then try to work on this repo and spawn another agent, recursively.
 
 Rules:
 
-- Do NOT run `opencode` from this repo, and do NOT run the orchestrator with the
-  default agent binary inside an opencode session.
+- Do NOT run any of the supported agent CLIs from this repo, and do NOT run the
+  orchestrator with a real agent binary inside an agent session.
 - To exercise pass/loop logic while developing, set `ITERATION_AGENT_CMD` to a mock
   runner (a script that prints canned JSON verdicts matching the phase schema).
   See `src/agent.ts` — the runner is injectable so tests and mock runs never

@@ -5,16 +5,48 @@ import type { Validator } from './verdicts';
 import { extractJsonVerdict } from './verdicts';
 import { takeSubmittedVerdict } from './submit-state';
 import { recordVerdictOutcome } from './verdict-stats';
+import { agentById, DEFAULT_AGENT_ID, type Agent } from './agents';
+import { readUserConfig, writeUserAgent } from './user-config';
+import { chooseAgent } from './select-agent';
 
 /**
- * The agent binary is injectable so mock runs never spawn a real agent:
- * ITERATION_AGENT_CMD holds the full command line ("node mock-agent.js ..."),
- * defaulting to `opencode run`.
+ * The agent command is resolved once, in priority order:
+ * 1. ITERATION_AGENT_CMD - the full command line ("node mock-agent.js ..."),
+ *    kept as the escape hatch for mock runs and custom wrapping.
+ * 2. the per-user cached choice (set by an earlier first-run pick).
+ * 3. a first-run picker; stored so it never appears again.
+ * The resolved command is cached for the life of the process.
  */
+let resolved: string[] | null = null;
+
 export function agentCommand(): string[] {
-  const spec = process.env.ITERATION_AGENT_CMD;
-  return spec === undefined || spec.trim() === '' ? ['opencode', 'run'] : spec.split(' ').filter(Boolean);
+  return resolveAgent().command;
 }
+
+/** Resolves (and, when needed, asks for) the agent; safe to call repeatedly. */
+export function resolveAgent(): Agent {
+  const spec = process.env.ITERATION_AGENT_CMD;
+  if (spec !== undefined && spec.trim() !== '') {
+    return { id: 'custom', label: spec.trim(), command: spec.split(' ').filter(Boolean), hint: 'ITERATION_AGENT_CMD' };
+  }
+  const cachedId = readUserConfig().agent;
+  const cached = cachedId === undefined ? undefined : agentById(cachedId);
+  if (cached !== undefined) return withCommand(cached);
+  const chosen = chooseAgent();
+  return withCommand(chosen);
+}
+
+function withCommand(agent: Agent): Agent {
+  resolved ??= agent.command;
+  return agent;
+}
+
+/** Test seam: forget the cached command so a new choice takes effect. */
+export function resetAgentCommand(): void {
+  resolved = null;
+}
+
+export { DEFAULT_AGENT_ID, writeUserAgent };
 
 /**
  * Runs the agent phase (async, so the orchestrator's HTTP server stays live

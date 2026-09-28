@@ -7,6 +7,7 @@ import { queueComment } from './comments';
 import { passSnapshot } from './snapshot';
 import { detectRepoFromOrigin } from './git-client';
 import { runIteration } from './loop';
+import { resolveAgent } from './agent';
 import { clearPid, pidAlive, readPid, writePid } from './pid';
 import { readStatus, setStatus, touchStatus } from './status';
 import { statusAgeSeconds } from './status';
@@ -166,6 +167,9 @@ export async function runOrchestrator(): Promise<void> {
   let server: http.Server | null = null;
   try {
     const repo = await detectRepoFromOrigin();
+    // Resolve the agent up front: an interactive first run shows the picker
+    // here, starting the harness proper only after a choice is cached.
+    resolveAgent();
     const previousPid = readPid();
     const siblingLive = previousPid !== null && pidAlive(previousPid);
     if (siblingLive) {
