@@ -74,7 +74,8 @@ function main(): void {
     return;
   }
 
-  if (command !== '' && command !== 'start' && command !== '--once' && !/^\d+$/.test(command)) {
+  const START_FLAGS = ['--once', '--dangerously-approve'];
+  if (command !== '' && command !== 'start' && !START_FLAGS.includes(command) && !/^\d+$/.test(command)) {
     fail(
       `Unknown command: ${command}. Run 'iteration' (or 'iteration start') to start the orchestrator,` +
       ' run `iteration tui` for the control center,' +

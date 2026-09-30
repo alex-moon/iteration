@@ -5,9 +5,10 @@ import type { Validator } from './verdicts';
 import { extractJsonVerdict } from './verdicts';
 import { takeSubmittedVerdict } from './submit-state';
 import { recordVerdictOutcome } from './verdict-stats';
-import { agentById, DEFAULT_AGENT_ID, type Agent } from './agents';
+import { agentById, DEFAULT_AGENT_ID, approveFlagFor, type Agent } from './agents';
 import { readUserConfig, writeUserAgent } from './user-config';
 import { chooseAgent } from './select-agent';
+import { isDangerouslyApprove } from './config';
 
 /**
  * The agent command is resolved once, in priority order:
@@ -16,6 +17,11 @@ import { chooseAgent } from './select-agent';
  * 2. the per-user cached choice (set by an earlier first-run pick).
  * 3. a first-run picker; stored so it never appears again.
  * The resolved command is cached for the life of the process.
+ *
+ * The command is the agent's plain non-interactive invocation. The agent's own
+ * approval-bypass flag is appended ONLY when `iteration --dangerously-approve`
+ * was passed; otherwise the phase inherits the agent's normal posture (which,
+ * headless, means would-be prompts are denied by the agent, not by iteration).
  */
 let resolved: string[] | null = null;
 
@@ -27,7 +33,14 @@ export function agentCommand(): string[] {
 export function resolveAgent(): Agent {
   const spec = process.env.ITERATION_AGENT_CMD;
   if (spec !== undefined && spec.trim() !== '') {
-    return { id: 'custom', label: spec.trim(), command: spec.split(' ').filter(Boolean), hint: 'ITERATION_AGENT_CMD' };
+    return withCommand({
+      id: 'custom',
+      label: spec.trim(),
+      command: spec.split(' ').filter(Boolean),
+      approveFlag: [],
+      hint: 'ITERATION_AGENT_CMD',
+      risk: 'custom command; iteration adds no approval flag - set the flag in the command if you need one',
+    });
   }
   const cachedId = readUserConfig().agent;
   const cached = cachedId === undefined ? undefined : agentById(cachedId);
@@ -37,8 +50,8 @@ export function resolveAgent(): Agent {
 }
 
 function withCommand(agent: Agent): Agent {
-  resolved ??= agent.command;
-  return agent;
+  resolved ??= isDangerouslyApprove() ? [...agent.command, ...approveFlagFor(agent.id)] : agent.command;
+  return { ...agent, command: resolved };
 }
 
 /** Test seam: forget the cached command so a new choice takes effect. */

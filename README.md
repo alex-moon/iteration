@@ -25,15 +25,34 @@ phases and caches the choice per user (`~/.config/iteration/config.json`, or
 `ITERATION_CONFIG_FILE`). Supported agents:
 
 - `opencode` — `opencode run`
-- Claude Code — `claude -p --dangerously-skip-permissions`
-- Codex CLI — `codex exec --dangerously-bypass-approvals-and-sandbox -`
-- GitHub Copilot CLI — `copilot -p --allow-all-tools --no-ask-user -s`
+- Claude Code — `claude -p`
+- Codex CLI — `codex exec -`
+- GitHub Copilot CLI — `copilot -p --no-ask-user -s`
 
-The approval-bypass flags are what let the harness run unattended: a CLI that
-stops to ask with nobody to answer would hang the phase. Set
-`ITERATION_AGENT_CMD="<cmd> [args]"` to override the whole command (this is also
-how the mock runner is injected). `scripts/mock-parity.sh` runs a full mocked
-`--once` pass in a throwaway clone — use it instead of ever running a real agent
-from inside this repo (see AGENTS.md for why).
+Iteration is bring-your-own-agent: the baselines above are the plain
+non-interactive invocation and carry NO approval-bypass flag, so each phase
+behaves exactly the way that CLI behaves on its own. In a headless run an
+approval prompt has nobody to answer it, so the agent's own rule normally
+DENIES the call — that is the agent's documented non-interactive behaviour, not
+iteration deciding to deny. Expect to add the agent's own bypass flag (below)
+if a phase needs privileged tools.
+
+`iteration --dangerously-approve` opts in by appending each agent's own bypass
+flag to the baseline:
+
+| Agent | Appended flag | What it turns off |
+| --- | --- | --- |
+| opencode | `--auto` | approvals not explicitly denied; explicit `deny` rules still apply |
+| Claude Code | `--dangerously-skip-permissions` | prompts AND sandboxing — run isolated |
+| Codex CLI | `--dangerously-bypass-approvals-and-sandbox` | approvals AND the sandbox — hardened environment only |
+| GitHub Copilot CLI | `--allow-all-tools` | pre-approves every tool — sandbox recommended |
+
+These flags are dangerous by design; use them only in a container/VM. For a
+custom command set `ITERATION_AGENT_CMD="<cmd> [args]"` to override the whole
+baseline (iteration appends no approval flag to a custom command, so pass one
+yourself if you want it); this is also how the mock runner is injected.
+`scripts/mock-parity.sh` runs a full mocked `--once` pass in a throwaway clone —
+use it instead of ever running a real agent from inside this repo (see
+AGENTS.md for why).
 
 Lint gate: `npm run typecheck`.
